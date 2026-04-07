@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     environment: str = "dev"
     openai_api_key: str | None = None
     openai_model: str = "gpt-4.1-mini"
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_timeout_seconds: int = 45
+    max_concurrent_research: int = 4
     max_review_loops: int = 2
     min_sources_per_company: int = 2
     default_companies: str = "Archireef,Coral Vita,SECORE International"
