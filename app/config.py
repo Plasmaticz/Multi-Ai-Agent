@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -8,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "Multi-Agent Research Copilot"
     environment: str = "dev"
+    app_data_dir: str = ".app_data"
     openai_api_key: str | None = None
     openai_model: str = "gpt-4.1-mini"
     openai_base_url: str = "https://api.openai.com/v1"
@@ -27,6 +29,14 @@ class Settings(BaseSettings):
     @property
     def default_company_list(self) -> list[str]:
         return [item.strip() for item in self.default_companies.split(",") if item.strip()]
+
+    @property
+    def app_data_path(self) -> Path:
+        return Path(self.app_data_dir)
+
+    @property
+    def sqlite_path(self) -> Path:
+        return self.app_data_path / "local_app.db"
 
 
 @lru_cache

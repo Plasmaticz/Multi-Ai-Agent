@@ -1,0 +1,352 @@
+:root {
+    --bg: #f3efe5;
+    --panel: #fffaf0;
+    --panel-strong: #0f172a;
+    --panel-soft: #e8dfcf;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --accent: #c4632b;
+    --accent-strong: #a64915;
+    --line: rgba(15, 23, 42, 0.12);
+    --shadow: 0 24px 60px rgba(15, 23, 42, 0.16);
+    --radius: 18px;
+    --font-sans: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+    --font-serif: "Iowan Old Style", "Georgia", serif;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background:
+        radial-gradient(circle at top left, rgba(196, 99, 43, 0.16), transparent 30%),
+        linear-gradient(180deg, #f7f1e7 0%, #eee7da 100%);
+    color: var(--text);
+    font-family: var(--font-sans);
+}
+
+button,
+input,
+textarea {
+    font: inherit;
+}
+
+.app-shell {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    min-height: 100vh;
+}
+
+.sidebar {
+    background: rgba(15, 23, 42, 0.96);
+    color: #f8fafc;
+    padding: 28px 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.sidebar-header,
+.topbar,
+.composer-actions,
+.modal-header,
+.checkbox-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.sidebar h1,
+.topbar h2,
+.empty-state h3,
+.modal-header h3 {
+    margin: 0;
+    font-family: var(--font-serif);
+    letter-spacing: -0.02em;
+}
+
+.eyebrow {
+    margin: 0 0 6px;
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.sidebar .eyebrow {
+    color: rgba(248, 250, 252, 0.55);
+}
+
+.thread-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow: auto;
+    padding-right: 4px;
+}
+
+.thread-item {
+    border: 1px solid rgba(248, 250, 252, 0.12);
+    border-radius: 16px;
+    background: rgba(248, 250, 252, 0.04);
+    color: inherit;
+    text-align: left;
+    padding: 14px 16px;
+    cursor: pointer;
+    transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.thread-item:hover,
+.thread-item.active {
+    transform: translateY(-1px);
+    background: rgba(248, 250, 252, 0.1);
+    border-color: rgba(248, 250, 252, 0.28);
+}
+
+.thread-item strong,
+.thread-item span {
+    display: block;
+}
+
+.thread-item strong {
+    margin-bottom: 6px;
+}
+
+.thread-item span {
+    color: rgba(248, 250, 252, 0.62);
+    font-size: 0.92rem;
+    line-height: 1.35;
+}
+
+.main-panel {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    padding: 28px;
+    gap: 18px;
+}
+
+.topbar,
+.chat-panel,
+.composer,
+.modal-card {
+    background: rgba(255, 250, 240, 0.92);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+}
+
+.topbar,
+.composer,
+.modal-card {
+    border-radius: var(--radius);
+}
+
+.topbar {
+    padding: 22px 24px;
+}
+
+.topbar-actions {
+    display: flex;
+    gap: 10px;
+}
+
+.chat-panel {
+    border-radius: 24px;
+    padding: 24px;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.chat-panel.empty {
+    align-items: center;
+    justify-content: center;
+}
+
+.empty-state {
+    max-width: 520px;
+    text-align: center;
+}
+
+.message {
+    max-width: 860px;
+    border-radius: 20px;
+    padding: 16px 18px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.message.user {
+    align-self: flex-end;
+    background: linear-gradient(135deg, #c4632b, #df8c58);
+    color: #fffaf0;
+}
+
+.message.assistant {
+    align-self: flex-start;
+    background: #fffdf8;
+    border: 1px solid var(--line);
+}
+
+.message-meta {
+    margin-bottom: 10px;
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.composer {
+    padding: 18px;
+}
+
+.composer textarea,
+.modal-content input {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: #fffdf8;
+    padding: 14px 16px;
+}
+
+.composer textarea {
+    min-height: 110px;
+    resize: vertical;
+}
+
+.primary-button,
+.ghost-button,
+.close-button {
+    border: none;
+    border-radius: 999px;
+    padding: 11px 16px;
+    cursor: pointer;
+    transition: transform 120ms ease, background 120ms ease;
+}
+
+.primary-button {
+    background: var(--accent);
+    color: #fffaf0;
+}
+
+.primary-button:hover,
+.ghost-button:hover,
+.close-button:hover {
+    transform: translateY(-1px);
+}
+
+.ghost-button,
+.close-button {
+    background: transparent;
+    color: var(--panel-strong);
+    border: 1px solid var(--line);
+}
+
+.status-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 8px 12px;
+    border-radius: 999px;
+    background: #f1e1d7;
+    color: var(--accent-strong);
+    font-size: 0.86rem;
+    font-weight: 700;
+}
+
+.modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.42);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    z-index: 50;
+}
+
+.modal.hidden {
+    display: none;
+}
+
+.modal-card {
+    width: min(560px, 100%);
+    max-height: min(88vh, 860px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.modal-card.wide {
+    width: min(980px, 100%);
+}
+
+.modal-header,
+.modal-content {
+    padding: 20px 22px;
+}
+
+.modal-content {
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.modal-content label {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.modal-content small {
+    color: var(--muted);
+}
+
+.checkbox-row {
+    justify-content: flex-start;
+}
+
+.logs-list {
+    gap: 10px;
+}
+
+.log-item {
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 14px 16px;
+    background: #fffdf8;
+}
+
+.log-item strong,
+.log-item span {
+    display: block;
+}
+
+.log-item strong {
+    margin-bottom: 6px;
+}
+
+.log-item span {
+    color: var(--muted);
+    font-size: 0.92rem;
+}
+
+@media (max-width: 960px) {
+    .app-shell {
+        grid-template-columns: 1fr;
+    }
+
+    .sidebar {
+        min-height: auto;
+    }
+
+    .main-panel {
+        padding-top: 0;
+    }
+}

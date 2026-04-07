@@ -26,9 +26,19 @@ cp .env.example .env
 uvicorn app.main:app --reload
 ```
 
+Then open [http://127.0.0.1:8000](http://127.0.0.1:8000) for the local interface.
+
 ## API
 
 - `GET /health`
+- `GET /`
+- `GET /api/threads`
+- `POST /api/threads`
+- `GET /api/threads/{thread_id}`
+- `POST /api/threads/{thread_id}/messages`
+- `GET /api/settings`
+- `POST /api/settings`
+- `GET /api/logs`
 - `POST /v1/projects/run`
 - `GET /v1/projects/{request_id}`
 
@@ -53,7 +63,8 @@ pytest
 
 - The researcher uses DuckDuckGo search when available and falls back to a stub provider.
 - The initial implementation keeps orchestration centralized to reduce agent chatter and simplify debugging.
-- State persistence is in-memory for MVP speed; swap `ProjectStore` for SQLite/Postgres when ready.
+- Local app state persists in SQLite for threads, messages, settings, and logs.
+- Workflow state for the direct `/v1/projects/*` API stays in memory.
 - If `OPENAI_API_KEY` is set, analyst/writer/reviewer use the OpenAI Responses API with fallback to local heuristics on errors.
 - Company research runs concurrently, with worker count controlled by `MAX_CONCURRENT_RESEARCH`.
 
@@ -61,6 +72,7 @@ pytest
 
 Main runtime settings are defined in `.env`:
 
+- `APP_DATA_DIR`
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - `OPENAI_BASE_URL`

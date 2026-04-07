@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ app_name }}</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div>
+                    <p class="eyebrow">Local Multi-Agent</p>
+                    <h1>{{ app_name }}</h1>
+                </div>
+                <button id="new-thread-button" class="primary-button">New Thread</button>
+            </div>
+            <div id="thread-list" class="thread-list"></div>
+        </aside>
+
+        <main class="main-panel">
+            <header class="topbar">
+                <div>
+                    <p class="eyebrow">Workspace</p>
+                    <h2 id="thread-title">Select a thread</h2>
+                </div>
+                <div class="topbar-actions">
+                    <button id="open-logs-button" class="ghost-button">Logs</button>
+                    <button id="open-settings-button" class="ghost-button">Settings</button>
+                </div>
+            </header>
+
+            <section id="chat-panel" class="chat-panel empty">
+                <div class="empty-state">
+                    <p class="eyebrow">Ready</p>
+                    <h3>Start a local thread and prompt the agent team.</h3>
+                    <p>The app runs locally. The only external dependency is your OpenAI API key.</p>
+                </div>
+            </section>
+
+            <footer class="composer">
+                <textarea id="prompt-input" placeholder="Ask the system to research, compare, summarize, or plan..."></textarea>
+                <div class="composer-actions">
+                    <span id="status-pill" class="status-pill">Idle</span>
+                    <button id="send-button" class="primary-button">Send</button>
+                </div>
+            </footer>
+        </main>
+    </div>
+
+    <div id="settings-modal" class="modal hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>Settings</h3>
+                <button data-close-modal="settings-modal" class="close-button">Close</button>
+            </div>
+            <form id="settings-form" class="modal-content">
+                <label>
+                    <span>OpenAI API key</span>
+                    <input id="api-key-input" type="password" placeholder="Paste a new key or leave blank to keep current">
+                    <small id="api-key-preview"></small>
+                </label>
+                <label class="checkbox-row">
+                    <input id="clear-api-key-input" type="checkbox">
+                    <span>Clear saved API key</span>
+                </label>
+                <label>
+                    <span>Model</span>
+                    <input id="model-input" type="text" value="gpt-4.1-mini">
+                </label>
+                <label>
+                    <span>Max concurrent research workers</span>
+                    <input id="concurrency-input" type="number" min="1" max="12" value="4">
+                </label>
+                <button type="submit" class="primary-button">Save settings</button>
+            </form>
+        </div>
+    </div>
+
+    <div id="logs-modal" class="modal hidden">
+        <div class="modal-card wide">
+            <div class="modal-header">
+                <div>
+                    <h3>Logs</h3>
+                    <p id="logs-subtitle">Recent activity for the active thread.</p>
+                </div>
+                <button data-close-modal="logs-modal" class="close-button">Close</button>
+            </div>
+            <div id="logs-list" class="logs-list modal-content"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
