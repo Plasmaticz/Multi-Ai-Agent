@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     openai_timeout_seconds: int = 45
     max_concurrent_research: int = 4
+    thread_recent_message_limit: int = 6
     max_review_loops: int = 2
     min_sources_per_company: int = 2
     default_companies: str = "Archireef,Coral Vita,SECORE International"

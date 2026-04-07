@@ -45,12 +45,24 @@ class ReviewNote(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+class ConversationTurn(BaseModel):
+    role: str
+    content: str
+
+
+class RunContext(BaseModel):
+    current_message: str
+    thread_summary: str = ""
+    recent_messages: list[ConversationTurn] = Field(default_factory=list)
+
+
 class ProjectState(BaseModel):
     request_id: str
     user_goal: str
     deliverable_type: str = "report"
     requirements: list[str] = Field(default_factory=list)
     status: str = "planning"
+    run_context: RunContext | None = None
     tasks: list[dict[str, Any]] = Field(default_factory=list)
     research_notes: list[ResearchNote] = Field(default_factory=list)
     analysis: AnalysisResult | None = None

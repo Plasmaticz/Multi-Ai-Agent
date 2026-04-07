@@ -1,7 +1,9 @@
 const state = {
   threads: [],
   activeThreadId: null,
+  activeRunId: null,
   isSending: false,
+  pollTimer: null,
 };
 
 const threadList = document.getElementById("thread-list");
@@ -38,30 +40,29 @@ async function boot() {
 }
 
 async function loadThreads() {
-  const response = await fetch("/api/threads");
-  const payload = await response.json();
+  const payload = await fetchJson("/api/threads");
   state.threads = payload.threads;
   renderThreads();
 }
 
 async function createThread() {
-  const response = await fetch("/api/threads", {
+  const payload = await fetchJson("/api/threads", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({}),
   });
-  const payload = await response.json();
   await loadThreads();
   await loadThread(payload.thread.id);
   promptInput.focus();
 }
 
 async function loadThread(threadId) {
+  stopRunPolling({ preserveStatus: true });
   state.activeThreadId = threadId;
-  const response = await fetch(`/api/threads/${threadId}`);
-  const payload = await response.json();
-  renderThread(payload.thread, payload.messages);
+  const payload = await fetchJson(`/api/threads/${threadId}`);
+  renderThread(payload.thread, payload.messages, payload.events || []);
   renderThreads();
+  applyRunState(payload.active_run);
 }
 
 function renderThreads() {
@@ -86,34 +87,79 @@ function renderThreads() {
   }
 }
 
-function renderThread(thread, messages) {
+function renderThread(thread, messages, events = []) {
   threadTitle.textContent = thread.title;
   chatPanel.classList.remove("empty");
   chatPanel.innerHTML = "";
 
-  if (messages.length === 0) {
+  const timeline = buildTimeline(messages, events);
+  if (timeline.length === 0) {
     chatPanel.classList.add("empty");
     chatPanel.innerHTML = `
       <div class="empty-state">
         <p class="eyebrow">Thread ready</p>
         <h3>Drop in a prompt and we will route it through the agent team.</h3>
-        <p>The response will be saved locally in this thread.</p>
+        <p>The response and progress will be saved locally in this thread.</p>
       </div>
     `;
     return;
   }
 
-  for (const message of messages) {
+  for (const item of timeline) {
     const article = document.createElement("article");
-    article.className = `message ${message.role}`;
+    article.className = `message ${item.role} ${item.message_type || "text"}`.trim();
     article.innerHTML = `
-      <div class="message-meta">${escapeHtml(message.role)} · ${formatTimestamp(message.created_at)}</div>
-      <div>${formatMessage(message.content)}</div>
+      <div class="message-meta">${escapeHtml(item.meta)} · ${formatTimestamp(item.created_at)}</div>
+      <div>${formatMessage(item.content)}</div>
     `;
     chatPanel.appendChild(article);
   }
 
   chatPanel.scrollTop = chatPanel.scrollHeight;
+}
+
+function buildTimeline(messages, events) {
+  const timeline = [];
+
+  for (const message of messages) {
+    timeline.push({
+      id: message.id,
+      role: message.role,
+      message_type: message.message_type || "text",
+      content: message.content,
+      created_at: message.created_at,
+      meta: labelForRole(message.role, message.message_type),
+      order: `m-${message.id}`,
+    });
+  }
+
+  for (const event of events) {
+    timeline.push({
+      id: `event-${event.id}`,
+      role: "system",
+      message_type: event.status === "failed" ? "error" : "progress",
+      content: event.message,
+      created_at: event.created_at,
+      meta: `${event.agent_name} · ${event.status}`,
+      order: `e-${event.id}`,
+    });
+  }
+
+  timeline.sort((left, right) => {
+    if (left.created_at === right.created_at) {
+      return left.order.localeCompare(right.order);
+    }
+    return left.created_at.localeCompare(right.created_at);
+  });
+
+  return timeline;
+}
+
+function labelForRole(role, messageType) {
+  if (messageType === "error") {
+    return `${role} · failed`;
+  }
+  return role;
 }
 
 async function sendPrompt() {
@@ -127,8 +173,10 @@ async function sendPrompt() {
   }
 
   state.isSending = true;
-  setStatus("Running");
   sendButton.disabled = true;
+  setStatus("Queued");
+  renderOptimisticUserMessage(content);
+  promptInput.value = "";
 
   try {
     const response = await fetch(`/api/threads/${state.activeThreadId}/messages`, {
@@ -136,26 +184,123 @@ async function sendPrompt() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content }),
     });
-    const payload = await response.json();
+    const payload = await readJson(response);
+
+    await loadThreads();
+
     if (!response.ok) {
-      throw new Error(payload.detail || "Request failed");
+      await loadThread(state.activeThreadId);
+      applyRunState(null, "Failed");
+      return;
     }
 
-    promptInput.value = "";
-    renderThread(payload.thread, payload.messages);
-    await loadThreads();
+    renderThread(payload.thread, payload.messages, payload.events || []);
+    const initialRun = payload.active_run || payload.run;
+    const fallbackStatus = initialRun?.status === "failed" ? "Failed" : "Idle";
+    applyRunState(initialRun, fallbackStatus);
   } catch (error) {
-    alert(error.message || "Request failed");
-  } finally {
-    state.isSending = false;
-    sendButton.disabled = false;
-    setStatus("Idle");
+    console.error(error);
+    await safeReloadActiveThread();
+    applyRunState(null, "Failed");
+  }
+}
+
+function renderOptimisticUserMessage(content) {
+  if (chatPanel.classList.contains("empty")) {
+    chatPanel.classList.remove("empty");
+    chatPanel.innerHTML = "";
+  }
+
+  const article = document.createElement("article");
+  article.className = "message user progress";
+  article.innerHTML = `
+    <div class="message-meta">user · pending</div>
+    <div>${formatMessage(content)}</div>
+  `;
+  chatPanel.appendChild(article);
+  chatPanel.scrollTop = chatPanel.scrollHeight;
+}
+
+function applyRunState(run, fallbackStatus = "Idle") {
+  if (run && run.status === "running") {
+    state.activeRunId = run.id;
+    state.isSending = true;
+    sendButton.disabled = true;
+    setStatus("Running");
+    startRunPolling(run.id);
+    return;
+  }
+
+  stopRunPolling({ preserveStatus: true });
+  state.isSending = false;
+  sendButton.disabled = false;
+  state.activeRunId = null;
+  setStatus(fallbackStatus);
+}
+
+function startRunPolling(runId) {
+  if (!state.activeThreadId) {
+    return;
+  }
+  if (state.pollTimer && state.activeRunId === runId) {
+    return;
+  }
+
+  stopRunPolling({ preserveStatus: true });
+  state.activeRunId = runId;
+  state.pollTimer = window.setInterval(() => {
+    pollRun(runId).catch((error) => {
+      console.error(error);
+    });
+  }, 1200);
+  void pollRun(runId);
+}
+
+function stopRunPolling({ preserveStatus = false } = {}) {
+  if (state.pollTimer) {
+    window.clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  }
+  if (!preserveStatus) {
+    state.activeRunId = null;
+  }
+}
+
+async function pollRun(runId) {
+  if (!state.activeThreadId) {
+    stopRunPolling();
+    return;
+  }
+
+  const payload = await fetchJson(`/api/threads/${state.activeThreadId}/runs/${runId}`);
+  renderThread(payload.thread, payload.messages, payload.events || []);
+
+  if (payload.run && payload.run.status === "running") {
+    setStatus("Running");
+    return;
+  }
+
+  await loadThreads();
+  state.isSending = false;
+  sendButton.disabled = false;
+  stopRunPolling();
+  setStatus(payload.run?.status === "failed" ? "Failed" : "Idle");
+}
+
+async function safeReloadActiveThread() {
+  if (!state.activeThreadId) {
+    return;
+  }
+  try {
+    const payload = await fetchJson(`/api/threads/${state.activeThreadId}`);
+    renderThread(payload.thread, payload.messages, payload.events || []);
+  } catch (error) {
+    console.error(error);
   }
 }
 
 async function openSettings() {
-  const response = await fetch("/api/settings");
-  const payload = await response.json();
+  const payload = await fetchJson("/api/settings");
   document.getElementById("api-key-input").value = "";
   document.getElementById("clear-api-key-input").checked = false;
   document.getElementById("model-input").value = payload.openai_model;
@@ -181,9 +326,8 @@ async function saveSettings(event) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const payload = await response.json();
+  const payload = await readJson(response);
   if (!response.ok) {
-    alert(payload.detail || "Could not save settings");
     return;
   }
 
@@ -194,9 +338,14 @@ async function saveSettings(event) {
 }
 
 async function openLogs() {
-  const query = state.activeThreadId ? `?thread_id=${encodeURIComponent(state.activeThreadId)}&limit=100` : "?limit=100";
-  const response = await fetch(`/api/logs${query}`);
-  const payload = await response.json();
+  const params = new URLSearchParams({ limit: "100" });
+  if (state.activeThreadId) {
+    params.set("thread_id", state.activeThreadId);
+  }
+  if (state.activeRunId) {
+    params.set("run_id", state.activeRunId);
+  }
+  const payload = await fetchJson(`/api/logs?${params.toString()}`);
   const logsList = document.getElementById("logs-list");
   logsList.innerHTML = "";
 
@@ -235,19 +384,36 @@ function setStatus(label) {
   statusPill.textContent = label;
 }
 
+async function fetchJson(url, options) {
+  const response = await fetch(url, options);
+  const payload = await readJson(response);
+  if (!response.ok) {
+    throw new Error(payload.detail || "Request failed");
+  }
+  return payload;
+}
+
+async function readJson(response) {
+  try {
+    return await response.json();
+  } catch {
+    return {};
+  }
+}
+
 function formatTimestamp(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
 function formatMessage(value) {
-  return escapeHtml(value)
+  return escapeHtml(String(value || ""))
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
     .replace(/\n/g, "<br>");
 }
 
 function escapeHtml(value) {
-  return value
+  return String(value || "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")

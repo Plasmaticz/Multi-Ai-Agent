@@ -5,3 +5,12 @@ __pycache__/
 !.env.example
 .DS_Store
 .app_data/
+node_modules/
+.npm-cache/
+dist/
+dist-electron/
+release/
+build/
+*.dmg
+*.app
+*.spec

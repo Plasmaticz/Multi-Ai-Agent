@@ -193,6 +193,23 @@ textarea {
     border: 1px solid var(--line);
 }
 
+.message.system {
+    align-self: center;
+    background: #efe7d7;
+    border: 1px dashed rgba(15, 23, 42, 0.18);
+    max-width: 720px;
+}
+
+.message.progress {
+    opacity: 0.88;
+}
+
+.message.error {
+    background: #fff1ed;
+    border: 1px solid rgba(166, 73, 21, 0.22);
+    color: #7c2d12;
+}
+
 .message-meta {
     margin-bottom: 10px;
     color: var(--muted);
@@ -200,6 +217,11 @@ textarea {
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
+}
+
+.message.system .message-meta,
+.message.error .message-meta {
+    color: #92400e;
 }
 
 .composer {

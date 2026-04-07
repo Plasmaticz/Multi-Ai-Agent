@@ -3,22 +3,31 @@ from __future__ import annotations
 import re
 
 from app.agents.base import BaseAgent
-from app.schemas.state import ResearchNote
+from app.schemas.state import ResearchNote, RunContext
+from app.tools.openai_responses import OpenAIResponsesClient, OpenAIResponsesError
 from app.tools.scraper import PageFetcher
+from app.tools.thread_memory import format_run_context
 from app.tools.web_search import WebSearchTool
 
 
 class ResearcherAgent(BaseAgent):
-    def __init__(self, search_tool: WebSearchTool, page_fetcher: PageFetcher):
+    def __init__(
+        self,
+        search_tool: WebSearchTool,
+        page_fetcher: PageFetcher,
+        llm_client: OpenAIResponsesClient | None = None,
+    ):
         super().__init__(name="researcher", role="specialist_research")
         self.search_tool = search_tool
         self.page_fetcher = page_fetcher
+        self.llm_client = llm_client
 
     def research_company(
         self,
         company: str,
         goal: str,
         criteria: list[str],
+        run_context: RunContext | None = None,
         max_sources: int = 4,
     ) -> ResearchNote:
         query = f"{company} {' '.join(criteria)} {goal}".strip()
@@ -47,6 +56,17 @@ class ResearcherAgent(BaseAgent):
         source_quality = sum(1 for source in enriched_sources if source.url.startswith("http"))
         confidence = min(0.95, round(0.35 + 0.1 * source_quality + 0.08 * len(facts), 2))
 
+        if self.llm_client and self.llm_client.enabled:
+            llm_note = self._research_with_llm(
+                company=company,
+                query=query,
+                criteria=criteria,
+                run_context=run_context,
+                sources=enriched_sources,
+            )
+            if llm_note is not None:
+                return llm_note
+
         return ResearchNote(
             company=company,
             question=query,
@@ -54,6 +74,44 @@ class ResearcherAgent(BaseAgent):
             sources=enriched_sources,
             confidence=confidence,
         )
+
+    def _research_with_llm(
+        self,
+        *,
+        company: str,
+        query: str,
+        criteria: list[str],
+        run_context: RunContext | None,
+        sources,
+    ) -> ResearchNote | None:
+        try:
+            payload = self.llm_client.generate_json(
+                system_prompt=(
+                    "You are a specialist research worker in a multi-agent team. "
+                    "Use only the provided source snippets. Return structured JSON."
+                ),
+                user_prompt=(
+                    "Return JSON with this structure exactly:\n"
+                    "{"
+                    "\"company\":\"...\","
+                    "\"question\":\"...\","
+                    "\"facts\":[\"...\"],"
+                    "\"sources\":[{\"title\":\"...\",\"url\":\"...\",\"snippet\":\"...\"}],"
+                    "\"confidence\":0.0"
+                    "}\n\n"
+                    f"Assigned company: {company}\n"
+                    f"Criteria: {criteria}\n"
+                    f"Conversation context:\n{format_run_context(run_context)}\n\n"
+                    f"Source evidence: {[source.model_dump(mode='json') for source in sources]}"
+                ),
+                max_output_tokens=1100,
+            )
+            note = ResearchNote.model_validate(payload)
+            if note.company != company:
+                return None
+            return note
+        except (OpenAIResponsesError, ValueError):
+            return None
 
     def _extract_fact(self, company: str, text: str, criteria: list[str]) -> str:
         if not text:

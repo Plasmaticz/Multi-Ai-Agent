@@ -6,6 +6,7 @@ import logging
 from app.agents.base import BaseAgent
 from app.schemas.state import ProjectState
 from app.tools.openai_responses import OpenAIResponsesClient, OpenAIResponsesError
+from app.tools.thread_memory import format_run_context
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ class WriterAgent(BaseAgent):
             "7) Sources\n"
             "Use only provided data, include markdown links for sources, and avoid unsupported claims.\n"
             f"Goal: {state.user_goal}\n"
+            f"Conversation context: {format_run_context(state.run_context)}\n"
             f"Analysis: {analysis.model_dump_json()}\n"
             f"Research: {json.dumps(research_payload)}\n"
             f"Reviewer revision focus: {revision_text}\n"

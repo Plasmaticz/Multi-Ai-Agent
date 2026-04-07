@@ -37,6 +37,7 @@ class LocalAppStore:
                 CREATE TABLE IF NOT EXISTS threads (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
+                    thread_summary TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -45,6 +46,7 @@ class LocalAppStore:
                     id TEXT PRIMARY KEY,
                     thread_id TEXT NOT NULL,
                     role TEXT NOT NULL,
+                    message_type TEXT NOT NULL DEFAULT 'text',
                     content TEXT NOT NULL,
                     run_id TEXT,
                     created_at TEXT NOT NULL,
@@ -84,7 +86,25 @@ class LocalAppStore:
                 );
                 """
             )
+            self._migrate_schema(connection)
             connection.commit()
+
+    def _migrate_schema(self, connection: sqlite3.Connection) -> None:
+        thread_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(threads)").fetchall()
+        }
+        if "thread_summary" not in thread_columns:
+            connection.execute(
+                "ALTER TABLE threads ADD COLUMN thread_summary TEXT NOT NULL DEFAULT ''"
+            )
+
+        message_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        if "message_type" not in message_columns:
+            connection.execute(
+                "ALTER TABLE messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text'"
+            )
 
     def list_threads(self) -> list[dict[str, Any]]:
         with self._connect() as connection:
@@ -93,6 +113,7 @@ class LocalAppStore:
                 SELECT
                     t.id,
                     t.title,
+                    t.thread_summary,
                     t.created_at,
                     t.updated_at,
                     (
@@ -119,10 +140,10 @@ class LocalAppStore:
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO threads (id, title, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO threads (id, title, thread_summary, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (thread_id, title, now, now),
+                (thread_id, title, "", now, now),
             )
             connection.commit()
         return self.get_thread(thread_id)
@@ -131,7 +152,7 @@ class LocalAppStore:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, title, created_at, updated_at
+                SELECT id, title, thread_summary, created_at, updated_at
                 FROM threads
                 WHERE id = ?
                 """,
@@ -167,11 +188,23 @@ class LocalAppStore:
             )
             connection.commit()
 
+    def update_thread_summary(self, thread_id: str, summary: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE threads
+                SET thread_summary = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (summary, utcnow_iso(), thread_id),
+            )
+            connection.commit()
+
     def list_messages(self, thread_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, thread_id, role, content, run_id, created_at
+                SELECT id, thread_id, role, message_type, content, run_id, created_at
                 FROM messages
                 WHERE thread_id = ?
                 ORDER BY created_at ASC
@@ -187,16 +220,17 @@ class LocalAppStore:
         content: str,
         *,
         run_id: str | None = None,
+        message_type: str = "text",
     ) -> dict[str, Any]:
         message_id = str(uuid4())
         now = utcnow_iso()
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO messages (id, thread_id, role, content, run_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO messages (id, thread_id, role, message_type, content, run_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (message_id, thread_id, role, content, run_id, now),
+                (message_id, thread_id, role, message_type, content, run_id, now),
             )
             connection.execute(
                 """
@@ -212,6 +246,7 @@ class LocalAppStore:
             "id": message_id,
             "thread_id": thread_id,
             "role": role,
+            "message_type": message_type,
             "content": content,
             "run_id": run_id,
             "created_at": now,
@@ -250,16 +285,67 @@ class LocalAppStore:
             )
             connection.commit()
 
-    def list_logs(self, thread_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+    def update_run_status(self, run_id: str, status: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE runs
+                SET status = ?
+                WHERE id = ?
+                """,
+                (status, run_id),
+            )
+            connection.commit()
+
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, thread_id, user_message_id, goal, status, result_json, created_at, completed_at
+                FROM runs
+                WHERE id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_active_run(self, thread_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, thread_id, user_message_id, goal, status, result_json, created_at, completed_at
+                FROM runs
+                WHERE thread_id = ? AND status = 'running'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (thread_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_logs(
+        self,
+        thread_id: str | None = None,
+        limit: int = 200,
+        *,
+        run_id: str | None = None,
+        ascending: bool = False,
+    ) -> list[dict[str, Any]]:
         query = """
             SELECT id, thread_id, run_id, agent_name, event_type, status, message, created_at
             FROM agent_logs
         """
         params: list[Any] = []
+        conditions: list[str] = []
         if thread_id is not None:
-            query += " WHERE thread_id = ?"
+            conditions.append("thread_id = ?")
             params.append(thread_id)
-        query += " ORDER BY id DESC LIMIT ?"
+        if run_id is not None:
+            conditions.append("run_id = ?")
+            params.append(run_id)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += f" ORDER BY id {'ASC' if ascending else 'DESC'} LIMIT ?"
         params.append(limit)
 
         with self._connect() as connection:

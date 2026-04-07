@@ -6,6 +6,7 @@ import logging
 from app.agents.base import BaseAgent
 from app.schemas.state import ProjectState, ReviewNote
 from app.tools.openai_responses import OpenAIResponsesClient, OpenAIResponsesError
+from app.tools.thread_memory import format_run_context
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ class ReviewerAgent(BaseAgent):
             "{\"passed\": true/false, \"issues\": [\"...\"], \"confidence\": 0.0-1.0}.\n"
             f"Goal: {state.user_goal}\n"
             f"Requirements: {json.dumps(state.requirements)}\n"
+            f"Conversation context: {format_run_context(state.run_context)}\n"
             f"Report draft: {draft}\n"
         )
         try:

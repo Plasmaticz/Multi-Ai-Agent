@@ -9,7 +9,7 @@ from app.agents.researcher import ResearcherAgent
 from app.agents.reviewer import ReviewerAgent
 from app.agents.writer import WriterAgent
 from app.config import Settings, get_settings
-from app.schemas.state import ProjectState, ResearchNote
+from app.schemas.state import ProjectState, ResearchNote, RunContext
 from app.schemas.tasks import TaskStatus, TaskType
 from app.tools.openai_responses import OpenAIResponsesClient
 from app.tools.scraper import PageFetcher
@@ -39,6 +39,7 @@ class CrewRunner:
         self.researcher = ResearcherAgent(
             search_tool=WebSearchTool(provider=search_provider),
             page_fetcher=PageFetcher(timeout_seconds=self.settings.request_timeout_seconds),
+            llm_client=self.llm_client,
         )
         self.analyst = AnalystAgent(llm_client=self.llm_client)
         self.writer = WriterAgent(llm_client=self.llm_client)
@@ -49,9 +50,19 @@ class CrewRunner:
         goal: str,
         companies: list[str] | None = None,
         request_id: str | None = None,
+        run_context: RunContext | None = None,
     ) -> ProjectState:
+        company_resolution_text = goal
+        if run_context is not None:
+            company_resolution_text = " ".join(
+                [
+                    goal,
+                    run_context.thread_summary,
+                    " ".join(turn.content for turn in run_context.recent_messages),
+                ]
+            )
         company_list = self.orchestrator.resolve_companies(
-            goal=goal,
+            goal=company_resolution_text,
             explicit_companies=companies,
             fallback_companies=self.settings.default_company_list,
         )
@@ -61,6 +72,7 @@ class CrewRunner:
             companies=company_list,
             request_id=request_id,
         )
+        state.run_context = run_context
         state.metadata["llm_enabled"] = self.llm_client.enabled
         state.metadata["research_concurrency"] = min(
             len(company_list),
@@ -90,6 +102,7 @@ class CrewRunner:
         state.analysis = self.analyst.analyze(
             notes=state.research_notes,
             criteria=["cost", "scalability", "technology"],
+            run_context=state.run_context,
         )
         self._set_task_status(state, TaskType.analyze, TaskStatus.completed)
         state.touch()
@@ -188,6 +201,7 @@ class CrewRunner:
                     company=company,
                     goal=state.user_goal,
                     criteria=state.requirements,
+                    run_context=state.run_context,
                     max_sources=max_sources,
                 ): company
                 for company in company_list

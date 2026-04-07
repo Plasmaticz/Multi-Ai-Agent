@@ -4,8 +4,9 @@ import json
 import logging
 
 from app.agents.base import BaseAgent
-from app.schemas.state import AnalysisResult, CompanyComparison, ResearchNote
+from app.schemas.state import AnalysisResult, CompanyComparison, ResearchNote, RunContext
 from app.tools.openai_responses import OpenAIResponsesClient, OpenAIResponsesError
+from app.tools.thread_memory import format_run_context
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +16,14 @@ class AnalystAgent(BaseAgent):
         super().__init__(name="analyst", role="specialist_analysis")
         self.llm_client = llm_client
 
-    def analyze(self, notes: list[ResearchNote], criteria: list[str]) -> AnalysisResult:
+    def analyze(
+        self,
+        notes: list[ResearchNote],
+        criteria: list[str],
+        run_context: RunContext | None = None,
+    ) -> AnalysisResult:
         if self.llm_client and self.llm_client.enabled:
-            llm_result = self._analyze_with_llm(notes=notes, criteria=criteria)
+            llm_result = self._analyze_with_llm(notes=notes, criteria=criteria, run_context=run_context)
             if llm_result is not None:
                 return llm_result
 
@@ -27,6 +33,7 @@ class AnalystAgent(BaseAgent):
         self,
         notes: list[ResearchNote],
         criteria: list[str],
+        run_context: RunContext | None,
     ) -> AnalysisResult | None:
         if not notes:
             return AnalysisResult(criteria=criteria, comparisons=[], key_takeaways=[])
@@ -60,6 +67,7 @@ class AnalystAgent(BaseAgent):
             "\"key_takeaways\": [\"...\", \"...\"]"
             "}\n\n"
             f"Required criteria: {criteria}\n"
+            f"Conversation context:\n{format_run_context(run_context)}\n\n"
             f"Research notes: {json.dumps(simplified_notes)}"
         )
 
