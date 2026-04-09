@@ -15,10 +15,12 @@ class TaskStatus(str, Enum):
 
 class TaskType(str, Enum):
     plan = "plan"
-    research = "research"
-    analyze = "analyze"
-    write = "write"
+    explore = "explore"
+    architect = "architect"
+    implement = "implement"
     review = "review"
+    fix = "fix"
+    validate = "validate"
     finalize = "finalize"
 
 

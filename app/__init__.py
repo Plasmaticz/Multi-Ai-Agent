@@ -1,1 +1,1 @@
-"""Application package for Multi-Agent Research Copilot."""
+"""Application package for Multi-Agent Coding Copilot."""

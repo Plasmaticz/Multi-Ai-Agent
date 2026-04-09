@@ -1,16 +1,17 @@
 # AI Agent Desktop
 
-A local-first desktop application for running a multi-agent research workflow on your own machine.
+A local-first desktop application for running a multi-agent coding workflow on your own machine.
 
-It combines an Electron desktop shell, a FastAPI backend, SQLite persistence, and a coordinated team of AI agents that can research, analyze, write, and review reports from a single user prompt.
+It combines an Electron desktop shell, a FastAPI backend, SQLite persistence, and a coordinated team of AI agents that inspect a repository, plan implementation work, propose code changes, review those proposals, and prepare validation commands from a single prompt.
 
 ## Overview
 
-`AI Agent Desktop` is designed to feel like a local research copilot:
+`AI Agent Desktop` is designed to feel like a local coding copilot:
 
 - create threads
-- send prompts in a chat-style interface
-- watch agent progress live in the timeline
+- delete threads safely with confirmation
+- send implementation prompts in a chat-style interface
+- watch grouped agent progress live in the timeline
 - inspect logs for each run
 - keep all thread history and settings stored locally
 
@@ -18,21 +19,22 @@ The only external dependency is your model provider. In the current version, tha
 
 ## What The Product Does
 
-When you send a prompt, the app runs a centralized multi-agent workflow:
+When you send a prompt, the app runs a centralized multi-agent coding workflow:
 
-1. `Orchestrator` plans the work.
-2. `Research workers` gather evidence in parallel.
-3. `Analyst` turns notes into structured comparisons.
-4. `Writer` drafts the report.
-5. `Reviewer` checks quality and requests revisions when needed.
-6. The final output is saved back into the thread.
+1. `Orchestrator` plans the coding run.
+2. `Repo Explorer` scans the local repository for relevant files and symbols.
+3. `Architect` turns repo findings into disjoint work items.
+4. `Code Workers` run in parallel and propose file-level changes.
+5. `Reviewer` checks for conflicts, missing coverage, and risky assumptions.
+6. `Validator` prepares suggested verification commands.
+7. `Finalizer` returns a structured coding response back into the thread.
 
 The app also carries thread memory into later runs using:
 
 - a rolling thread summary
 - recent turns from the conversation
 
-That makes follow-up prompts feel more like an ongoing conversation instead of isolated one-off requests.
+That makes follow-up prompts feel more like ongoing implementation work instead of isolated one-off requests.
 
 ## Features
 
@@ -40,11 +42,14 @@ That makes follow-up prompts feel more like an ongoing conversation instead of i
 - FastAPI backend embedded behind the desktop shell
 - Persistent local storage with SQLite
 - Thread list and chat-style workspace
+- Short thread titles derived from the first prompt
+- Delete-thread flow with confirmation
 - Settings modal for OpenAI API key and model selection
 - Logs modal for debugging agent activity
-- Live run progress in the thread timeline
+- Live run activity card in the thread timeline
 - In-thread error rendering for failed runs
-- Parallel research workers
+- Repository-aware exploration of local files
+- Parallel code workers with disjoint write scopes
 - Thread memory via summary plus recent messages
 - Packaged macOS desktop build support
 
@@ -54,12 +59,14 @@ That makes follow-up prompts feel more like an ongoing conversation instead of i
 Electron App
   -> FastAPI backend
     -> Local SQLite store
-    -> Multi-agent workflow runner
+    -> Multi-agent coding workflow runner
       -> Orchestrator
-      -> Parallel Research Workers
-      -> Analyst
-      -> Writer
+      -> Repo Explorer
+      -> Architect
+      -> Parallel Code Workers
       -> Reviewer
+      -> Validator
+      -> Finalizer
 ```
 
 ## Tech Stack
@@ -68,6 +75,7 @@ Electron App
 - `FastAPI` for the local backend
 - `SQLite` for threads, messages, runs, logs, and settings
 - `OpenAI Responses API` for LLM-backed agents
+- `ripgrep` for repository search
 - `PyInstaller` for bundling the backend into a standalone executable
 - `electron-builder` for macOS app packaging
 
@@ -75,11 +83,11 @@ Electron App
 
 ```text
 app/
-  agents/        Agent roles and behavior
+  agents/        Agent roles and coding workflow behavior
   api/           FastAPI routes
   local/         SQLite-backed local persistence
   schemas/       Shared workflow and API models
-  tools/         OpenAI, search, scraping, thread-memory helpers
+  tools/         OpenAI, repo search, thread-memory helpers
   workflows/     Centralized multi-agent runner
 static/          Frontend JS and CSS
 templates/       HTML templates for the local UI
@@ -179,30 +187,37 @@ Then open:
 6. Send a prompt like:
 
 ```text
-Compare 3 coral restoration startups by cost, scalability, and technology.
+Add JWT auth to the FastAPI app, propose the file changes, review for bugs, and include tests to run.
 ```
 
 During the run, you should see:
 
 - your user message appear immediately
-- live progress events in the thread timeline
+- a single activity card showing the agent team and each stage state
 - a saved assistant response when the run completes
 - logs available in the `Logs` modal
+
+Thread behavior:
+
+- new thread titles are shortened automatically based on the first prompt
+- the sidebar thread list and the chat timeline scroll independently
+- `Delete Thread` removes the selected thread from the database and UI after confirmation
+- active threads cannot be deleted while a run is still in progress
 
 ## Environment Configuration
 
 Main runtime values come from `.env`.
 
 ```env
+APP_NAME=Multi-Agent Coding Copilot
 APP_DATA_DIR=.app_data
+WORKSPACE_DIR=.
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1-mini
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_TIMEOUT_SECONDS=45
 MAX_CONCURRENT_RESEARCH=4
 MAX_REVIEW_LOOPS=2
-MIN_SOURCES_PER_COMPANY=2
-DEFAULT_COMPANIES=Archireef,Coral Vita,SECORE International
 REQUEST_TIMEOUT_SECONDS=15
 ```
 
@@ -210,7 +225,8 @@ REQUEST_TIMEOUT_SECONDS=15
 
 - `OPENAI_API_KEY`: required for live OpenAI-backed runs
 - `OPENAI_MODEL`: model used by the LLM-backed agents
-- `MAX_CONCURRENT_RESEARCH`: number of parallel research workers
+- `WORKSPACE_DIR`: local repository or workspace to inspect
+- `MAX_CONCURRENT_RESEARCH`: current concurrency knob for parallel work items
 - `APP_DATA_DIR`: location of local SQLite data and app state
 
 ## Desktop Build
@@ -227,6 +243,31 @@ This produces:
 - packaged desktop artifacts in `dist/`
 - a macOS `.dmg` installer
 
+## Click To Launch
+
+After building the desktop app, you can launch it like a normal macOS application:
+
+- open `dist/mac-arm64/AI Agent Desktop.app`
+- or install from the generated DMG in `dist/AI Agent Desktop-0.2.0-arm64.dmg`
+
+When launched this way:
+
+- Electron starts the local backend automatically
+- the app waits for the backend health check
+- the desktop window opens only after the backend is ready
+
+When you close the app window:
+
+- the Electron app quits
+- the local backend is terminated cleanly
+- the app does not keep running in the background
+
+If you want to launch the Electron shell directly during development without `npm run dev`, you can also use:
+
+```bash
+npm start
+```
+
 ## API Endpoints
 
 The app UI uses these local routes:
@@ -236,17 +277,13 @@ The app UI uses these local routes:
 - `GET /api/meta`
 - `GET /api/threads`
 - `POST /api/threads`
+- `DELETE /api/threads/{thread_id}`
 - `GET /api/threads/{thread_id}`
 - `POST /api/threads/{thread_id}/messages`
 - `GET /api/threads/{thread_id}/runs/{run_id}`
 - `GET /api/settings`
 - `POST /api/settings`
 - `GET /api/logs`
-
-There is also a direct workflow API:
-
-- `POST /v1/projects/run`
-- `GET /v1/projects/{request_id}`
 
 ## Tests
 
@@ -258,10 +295,13 @@ pytest -q
 
 ## Current Behavior Notes
 
-- Research workers run concurrently.
+- Repo exploration is local and repository-aware.
 - Thread context is summarized and reused across later prompts.
-- Analyst, writer, and reviewer are LLM-backed when OpenAI is configured.
-- If the OpenAI API is unavailable or quota is exhausted, the app falls back in parts of the workflow where fallback logic exists.
+- Architect, code workers, and reviewer are LLM-backed when OpenAI is configured.
+- Code workers run in parallel when they have disjoint scopes.
+- The chat timeline shows grouped per-run agent activity rather than raw log spam.
+- Thread deletion is persisted in SQLite and blocked while a run is active.
+- The workflow proposes code changes and validation commands; it does not automatically apply patches to your repo yet.
 - Local app state is stored in SQLite.
 - Desktop packaging currently targets macOS first.
 
@@ -269,15 +309,16 @@ pytest -q
 
 Some strong next steps for the project:
 
-- streaming token-by-token assistant responses
+- actual patch application with guarded approval
+- terminal-backed test execution from the desktop workflow
 - richer trace visualization per agent
-- stronger source validation and citation mapping
+- stronger file ownership and merge-conflict prevention
 - code signing and notarization for macOS builds
 - optional cross-platform packaging
 
 ## Why This Project Exists
 
-This project is meant to demonstrate a practical multi-agent application that is:
+This project is meant to demonstrate a practical multi-agent coding application that is:
 
 - locally runnable
 - easy to inspect and debug

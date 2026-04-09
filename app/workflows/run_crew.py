@@ -3,18 +3,19 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
-from app.agents.analyst import AnalystAgent
+from app.agents.architect import ArchitectAgent
+from app.agents.coder import CodeWorkerAgent
+from app.agents.finalizer import FinalizerAgent
 from app.agents.orchestrator import OrchestratorAgent
-from app.agents.researcher import ResearcherAgent
+from app.agents.repo_explorer import RepoExplorerAgent
 from app.agents.reviewer import ReviewerAgent
-from app.agents.writer import WriterAgent
+from app.agents.validator import ValidatorAgent
 from app.config import Settings, get_settings
-from app.schemas.state import ProjectState, ResearchNote, RunContext
+from app.schemas.state import ProjectState, RunContext, WorkItem, WorkerArtifact
 from app.schemas.tasks import TaskStatus, TaskType
 from app.tools.openai_responses import OpenAIResponsesClient
-from app.tools.scraper import PageFetcher
+from app.tools.repo_tools import RepoSearchTool
 from app.tools.storage import ProjectStore
-from app.tools.web_search import SearchProvider, WebSearchTool
 
 
 class CrewRunner:
@@ -22,7 +23,7 @@ class CrewRunner:
         self,
         settings: Settings | None = None,
         store: ProjectStore | None = None,
-        search_provider: SearchProvider | None = None,
+        search_provider=None,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
     ):
         self.settings = settings or get_settings()
@@ -35,15 +36,14 @@ class CrewRunner:
             base_url=self.settings.openai_base_url,
         )
 
+        repo_search = RepoSearchTool(workspace_path=self.settings.workspace_path)
         self.orchestrator = OrchestratorAgent()
-        self.researcher = ResearcherAgent(
-            search_tool=WebSearchTool(provider=search_provider),
-            page_fetcher=PageFetcher(timeout_seconds=self.settings.request_timeout_seconds),
-            llm_client=self.llm_client,
-        )
-        self.analyst = AnalystAgent(llm_client=self.llm_client)
-        self.writer = WriterAgent(llm_client=self.llm_client)
+        self.repo_explorer = RepoExplorerAgent(repo_search=repo_search, llm_client=self.llm_client)
+        self.architect = ArchitectAgent(llm_client=self.llm_client)
+        self.code_worker = CodeWorkerAgent(llm_client=self.llm_client)
         self.reviewer = ReviewerAgent(llm_client=self.llm_client)
+        self.validator = ValidatorAgent()
+        self.finalizer = FinalizerAgent()
 
     def run(
         self,
@@ -52,213 +52,244 @@ class CrewRunner:
         request_id: str | None = None,
         run_context: RunContext | None = None,
     ) -> ProjectState:
-        company_resolution_text = goal
-        if run_context is not None:
-            company_resolution_text = " ".join(
-                [
-                    goal,
-                    run_context.thread_summary,
-                    " ".join(turn.content for turn in run_context.recent_messages),
-                ]
-            )
-        company_list = self.orchestrator.resolve_companies(
-            goal=company_resolution_text,
-            explicit_companies=companies,
-            fallback_companies=self.settings.default_company_list,
-        )
-
-        state = self.orchestrator.initialize_project(
-            goal=goal,
-            companies=company_list,
-            request_id=request_id,
-        )
+        state = self.orchestrator.initialize_project(goal=goal, request_id=request_id)
         state.run_context = run_context
         state.metadata["llm_enabled"] = self.llm_client.enabled
-        state.metadata["research_concurrency"] = min(
-            len(company_list),
-            max(1, self.settings.max_concurrent_research),
-        )
+        state.metadata["implementation_concurrency"] = max(1, self.settings.max_concurrent_research)
+
         state.tasks = [
-            task.model_dump(mode="json")
-            for task in self.orchestrator.plan(state.request_id, company_list)
+            {
+                "task_id": f"{state.request_id}-plan",
+                "task_type": TaskType.plan.value,
+                "assigned_to": "orchestrator",
+                "instructions": "Plan the coding workflow and scope the work items.",
+                "status": TaskStatus.pending.value,
+                "input_data": {},
+                "output_data": {},
+            },
+            {
+                "task_id": f"{state.request_id}-explore",
+                "task_type": TaskType.explore.value,
+                "assigned_to": "repo_explorer",
+                "instructions": "Scan the repository for relevant files, symbols, and context.",
+                "status": TaskStatus.pending.value,
+                "input_data": {},
+                "output_data": {},
+            },
+            {
+                "task_id": f"{state.request_id}-architect",
+                "task_type": TaskType.architect.value,
+                "assigned_to": "architect",
+                "instructions": "Convert repository findings into disjoint coding work items.",
+                "status": TaskStatus.pending.value,
+                "input_data": {},
+                "output_data": {},
+            },
         ]
-        self._emit_event("orchestrator", "plan", "started", "Planning workflow.")
+
+        self._emit_event("orchestrator", "plan", "started", "Planning coding workflow.")
         self._set_task_status(state, TaskType.plan, TaskStatus.in_progress)
         self._set_task_status(state, TaskType.plan, TaskStatus.completed)
         self._emit_event("orchestrator", "plan", "completed", "Workflow plan created.")
         self.store.save(state)
 
-        state.status = "research"
+        state.status = "explore"
+        self._emit_event("repo_explorer", "explore", "started", "Scanning repository for relevant context.")
+        self._set_task_status(state, TaskType.explore, TaskStatus.in_progress)
+        state.repo_findings = self.repo_explorer.explore(goal=goal, run_context=run_context)
+        self._set_task_status(state, TaskType.explore, TaskStatus.completed)
+        self._emit_event("repo_explorer", "explore", "completed", "Repository scan finished.")
         state.touch()
-        self._emit_event("researcher", "research", "started", "Running concurrent company research.")
-        state.research_notes = self._run_parallel_research(state=state, company_list=company_list)
-        state.touch()
-        self._emit_event("researcher", "research", "completed", "Research stage finished.")
         self.store.save(state)
 
-        state.status = "analysis"
-        self._emit_event("analyst", "analysis", "started", "Generating company comparison.")
-        self._set_task_status(state, TaskType.analyze, TaskStatus.in_progress)
-        state.analysis = self.analyst.analyze(
-            notes=state.research_notes,
-            criteria=["cost", "scalability", "technology"],
+        state.status = "architect"
+        self._emit_event("architect", "architect", "started", "Building coding work items.")
+        self._set_task_status(state, TaskType.architect, TaskStatus.in_progress)
+        fallback_items = self.orchestrator.build_work_items(state.request_id, goal, state.repo_findings)
+        state.implementation_plan = self.architect.plan_work(
+            goal=goal,
+            findings=state.repo_findings,
+            fallback_items=fallback_items,
             run_context=state.run_context,
         )
-        self._set_task_status(state, TaskType.analyze, TaskStatus.completed)
+        state.tasks = [task.model_dump(mode="json") for task in self.orchestrator.plan(state.request_id, state.implementation_plan)]
+        self._set_task_status(state, TaskType.plan, TaskStatus.completed)
+        self._set_task_status(state, TaskType.explore, TaskStatus.completed)
+        self._set_task_status(state, TaskType.architect, TaskStatus.completed)
+        self._emit_event("architect", "architect", "completed", "Coding work items ready.")
         state.touch()
-        self._emit_event("analyst", "analysis", "completed", "Analysis stage finished.")
         self.store.save(state)
 
-        state.status = "review"
-        revision_focus: str | None = None
-        attempts = max(1, self.settings.max_review_loops + 1)
-        for _ in range(attempts):
-            self._emit_event("writer", "write", "started", "Drafting report.")
-            self._set_task_status(state, TaskType.write, TaskStatus.in_progress)
-            draft = self.writer.write_report(state, revision_focus=revision_focus)
-            state.drafts.append(draft)
-            self._set_task_status(state, TaskType.write, TaskStatus.completed)
-            self._emit_event("writer", "write", "completed", "Draft generated.")
+        state.status = "implement"
+        self._emit_event("code_worker", "implement", "started", "Running parallel code workers.")
+        state.worker_outputs = self._run_parallel_implementation(state=state, revision_focus=None)
+        self._emit_event("code_worker", "implement", "completed", "Initial implementation proposals finished.")
+        state.touch()
+        self.store.save(state)
 
-            self._emit_event("reviewer", "review", "started", "Reviewing draft.")
+        attempts = max(1, self.settings.max_review_loops + 1)
+        revision_focus: str | None = None
+        for attempt in range(attempts):
+            state.status = "review"
+            self._emit_event("reviewer", "review", "started", "Reviewing proposed code changes.")
             self._set_task_status(state, TaskType.review, TaskStatus.in_progress)
-            review = self.reviewer.review(
-                state=state,
-                draft=draft,
-                min_sources_per_company=self.settings.min_sources_per_company,
-            )
+            review = self.reviewer.review(state=state, worker_outputs=state.worker_outputs)
             state.review_notes.append(review)
-            self._set_task_status(state, TaskType.review, TaskStatus.completed)
-            state.touch()
+            self._set_task_status(state, TaskType.review, TaskStatus.completed if review.passed else TaskStatus.failed)
             self._emit_event(
                 "reviewer",
                 "review",
                 "completed" if review.passed else "needs_revision",
                 "Review passed." if review.passed else "; ".join(review.issues),
             )
+            state.touch()
             self.store.save(state)
 
             if review.passed:
-                state.status = "complete"
-                self._emit_event("orchestrator", "finalize", "started", "Finalizing response.")
-                self._set_task_status(state, TaskType.finalize, TaskStatus.in_progress)
-                state.final_output = draft
-                self._set_task_status(state, TaskType.finalize, TaskStatus.completed)
-                state.touch()
-                self._emit_event("orchestrator", "finalize", "completed", "Run completed.")
-                self.store.save(state)
-                return state
+                self._set_task_status(state, TaskType.fix, TaskStatus.completed)
+                break
+
+            if attempt == attempts - 1:
+                state.status = "needs_human_review"
+                break
 
             revision_focus = "; ".join(review.issues)
+            state.status = "fix"
+            self._emit_event("fixer", "fix", "started", "Revising worker outputs from review feedback.")
+            self._set_task_status(state, TaskType.fix, TaskStatus.in_progress)
+            state.worker_outputs = self._run_parallel_implementation(state=state, revision_focus=revision_focus)
+            self._set_task_status(state, TaskType.fix, TaskStatus.completed)
+            self._emit_event("fixer", "fix", "completed", "Revision pass finished.")
+            state.touch()
+            self.store.save(state)
 
-        state.status = "needs_human_review"
-        self._set_task_status(state, TaskType.finalize, TaskStatus.failed)
-        state.final_output = state.drafts[-1] if state.drafts else ""
+        state.status = "validate"
+        self._emit_event("validator", "validate", "started", "Preparing validation commands.")
+        self._set_task_status(state, TaskType.validate, TaskStatus.in_progress)
+        state.validation_commands = self.validator.build_validation_commands(state.worker_outputs)
+        self._set_task_status(state, TaskType.validate, TaskStatus.completed)
+        self._emit_event("validator", "validate", "completed", "Validation commands prepared.")
         state.touch()
-        self._emit_event("orchestrator", "finalize", "failed", "Run needs human review.")
+        self.store.save(state)
+
+        state.status = "complete" if state.review_notes and state.review_notes[-1].passed else "needs_human_review"
+        self._emit_event("orchestrator", "finalize", "started", "Finalizing coding response.")
+        self._set_task_status(state, TaskType.finalize, TaskStatus.in_progress)
+        state.final_output = self.finalizer.finalize(state, state.worker_outputs)
+        self._set_task_status(
+            state,
+            TaskType.finalize,
+            TaskStatus.completed if state.status == "complete" else TaskStatus.failed,
+        )
+        self._emit_event(
+            "orchestrator",
+            "finalize",
+            "completed" if state.status == "complete" else "failed",
+            "Coding workflow completed." if state.status == "complete" else "Coding workflow needs human review.",
+        )
+        state.touch()
         self.store.save(state)
         return state
+
+    def _run_parallel_implementation(
+        self,
+        state: ProjectState,
+        revision_focus: str | None,
+    ) -> list[WorkerArtifact]:
+        work_items = state.implementation_plan
+        if not work_items:
+            return []
+
+        worker_count = min(len(work_items), max(1, self.settings.max_concurrent_research))
+        outputs_by_item: dict[str, WorkerArtifact] = {}
+        for work_item in work_items:
+            self._set_task_status(
+                state,
+                TaskType.implement,
+                TaskStatus.in_progress,
+                work_item_id=work_item.work_item_id,
+            )
+            self._emit_event(
+                work_item.owner,
+                "implement_work_item",
+                "started",
+                f"Implementing {work_item.title}.",
+            )
+        state.touch()
+        self.store.save(state)
+
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_to_item = {
+                executor.submit(
+                    self.code_worker.implement,
+                    goal=state.user_goal,
+                    work_item=work_item,
+                    findings=state.repo_findings,
+                    run_context=state.run_context,
+                    revision_focus=revision_focus,
+                ): work_item
+                for work_item in work_items
+            }
+
+            for future in as_completed(future_to_item):
+                work_item = future_to_item[future]
+                try:
+                    outputs_by_item[work_item.work_item_id] = future.result()
+                    self._set_task_status(
+                        state,
+                        TaskType.implement,
+                        TaskStatus.completed,
+                        work_item_id=work_item.work_item_id,
+                    )
+                    self._emit_event(
+                        work_item.owner,
+                        "implement_work_item",
+                        "completed",
+                        f"Completed {work_item.title}.",
+                    )
+                except Exception as exc:
+                    outputs_by_item[work_item.work_item_id] = WorkerArtifact(
+                        work_item_id=work_item.work_item_id,
+                        owner=work_item.owner,
+                        summary=f"Worker failed for {work_item.title}: {exc}",
+                        files_touched=work_item.write_scope,
+                        code_changes=[],
+                        tests_to_run=[],
+                        risks=[f"Worker execution failed: {exc}"],
+                        confidence=0.0,
+                    )
+                    self._set_task_status(
+                        state,
+                        TaskType.implement,
+                        TaskStatus.failed,
+                        work_item_id=work_item.work_item_id,
+                    )
+                    self._emit_event(
+                        work_item.owner,
+                        "implement_work_item",
+                        "failed",
+                        f"Failed {work_item.title}: {exc}",
+                    )
+                state.touch()
+                self.store.save(state)
+
+        return [outputs_by_item[item.work_item_id] for item in work_items if item.work_item_id in outputs_by_item]
 
     def _set_task_status(
         self,
         state: ProjectState,
         task_type: TaskType,
         status: TaskStatus,
-        company: str | None = None,
+        work_item_id: str | None = None,
     ) -> None:
         for task in state.tasks:
             if task.get("task_type") != task_type.value:
                 continue
-            if company is not None and task.get("input_data", {}).get("company") != company:
+            if work_item_id is not None and task.get("input_data", {}).get("work_item_id") != work_item_id:
                 continue
             task["status"] = status.value
-            break
-
-    def _run_parallel_research(
-        self,
-        state: ProjectState,
-        company_list: list[str],
-    ) -> list[ResearchNote]:
-        max_sources = max(3, self.settings.min_sources_per_company)
-        worker_count = min(len(company_list), max(1, self.settings.max_concurrent_research))
-        notes_by_company: dict[str, ResearchNote] = {}
-
-        for company in company_list:
-            self._set_task_status(
-                state,
-                TaskType.research,
-                TaskStatus.in_progress,
-                company=company,
-            )
-            self._emit_event("researcher", "research_company", "started", f"Researching {company}.")
-        state.touch()
-        self.store.save(state)
-
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            future_to_company = {
-                executor.submit(
-                    self.researcher.research_company,
-                    company=company,
-                    goal=state.user_goal,
-                    criteria=state.requirements,
-                    run_context=state.run_context,
-                    max_sources=max_sources,
-                ): company
-                for company in company_list
-            }
-
-            for future in as_completed(future_to_company):
-                company = future_to_company[future]
-                try:
-                    notes_by_company[company] = future.result()
-                    self._set_task_status(
-                        state,
-                        TaskType.research,
-                        TaskStatus.completed,
-                        company=company,
-                    )
-                    self._emit_event(
-                        "researcher",
-                        "research_company",
-                        "completed",
-                        f"Completed research for {company}.",
-                    )
-                except Exception as exc:
-                    notes_by_company[company] = self._build_failed_research_note(
-                        company=company,
-                        goal=state.user_goal,
-                        error=str(exc),
-                    )
-                    self._set_task_status(
-                        state,
-                        TaskType.research,
-                        TaskStatus.failed,
-                        company=company,
-                    )
-                    self._emit_event(
-                        "researcher",
-                        "research_company",
-                        "failed",
-                        f"Research failed for {company}: {exc}",
-                    )
-                state.touch()
-                self.store.save(state)
-
-        return [notes_by_company[company] for company in company_list]
-
-    def _build_failed_research_note(
-        self,
-        company: str,
-        goal: str,
-        error: str,
-    ) -> ResearchNote:
-        return ResearchNote(
-            company=company,
-            question=f"{company} {goal}",
-            facts=[f"Automated research failed for {company}: {error}"],
-            sources=[],
-            confidence=0.0,
-        )
+            if work_item_id is None:
+                break
 
     def _emit_event(
         self,

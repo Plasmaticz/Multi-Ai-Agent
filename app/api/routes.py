@@ -65,6 +65,18 @@ def create_thread(request: Request, payload: CreateThreadRequest) -> dict[str, A
     return {"thread": thread}
 
 
+@router.delete("/api/threads/{thread_id}")
+def delete_thread(thread_id: str, request: Request) -> dict[str, Any]:
+    store = request.app.state.local_store
+    _get_thread_or_404(store, thread_id)
+    active_run = store.get_active_run(thread_id)
+    if active_run is not None:
+        raise HTTPException(status_code=409, detail="Cannot delete a thread while a run is still in progress.")
+
+    store.delete_thread(thread_id)
+    return {"deleted": True, "thread_id": thread_id}
+
+
 @router.get("/api/threads/{thread_id}")
 def get_thread_detail(thread_id: str, request: Request) -> dict[str, Any]:
     return _thread_payload(request.app.state.local_store, thread_id)

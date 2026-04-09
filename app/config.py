@@ -7,9 +7,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "Multi-Agent Research Copilot"
+    app_name: str = "Multi-Agent Coding Copilot"
     environment: str = "dev"
     app_data_dir: str = ".app_data"
+    workspace_dir: str = "."
     openai_api_key: str | None = None
     openai_model: str = "gpt-4.1-mini"
     openai_base_url: str = "https://api.openai.com/v1"
@@ -38,6 +39,10 @@ class Settings(BaseSettings):
     @property
     def sqlite_path(self) -> Path:
         return self.app_data_path / "local_app.db"
+
+    @property
+    def workspace_path(self) -> Path:
+        return Path(self.workspace_dir).resolve()
 
 
 @lru_cache

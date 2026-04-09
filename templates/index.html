@@ -11,12 +11,18 @@
         <aside class="sidebar">
             <div class="sidebar-header">
                 <div>
-                    <p class="eyebrow">Local Multi-Agent</p>
+                    <p class="eyebrow">Local Multi-Agent Coding</p>
                     <h1>{{ app_name }}</h1>
                 </div>
                 <button id="new-thread-button" class="primary-button">New Thread</button>
             </div>
-            <div id="thread-list" class="thread-list"></div>
+            <section class="sidebar-section">
+                <div class="section-header">
+                    <p class="eyebrow">Threads</p>
+                    <span class="section-caption">Local history</span>
+                </div>
+                <div id="thread-list" class="thread-list"></div>
+            </section>
         </aside>
 
         <main class="main-panel">
@@ -26,6 +32,7 @@
                     <h2 id="thread-title">Select a thread</h2>
                 </div>
                 <div class="topbar-actions">
+                    <button id="delete-thread-button" class="ghost-button danger-button">Delete Thread</button>
                     <button id="open-logs-button" class="ghost-button">Logs</button>
                     <button id="open-settings-button" class="ghost-button">Settings</button>
                 </div>
@@ -34,13 +41,13 @@
             <section id="chat-panel" class="chat-panel empty">
                 <div class="empty-state">
                     <p class="eyebrow">Ready</p>
-                    <h3>Start a local thread and prompt the agent team.</h3>
+                    <h3>Start a local thread and prompt the coding agent team.</h3>
                     <p>The app runs locally. The only external dependency is your OpenAI API key.</p>
                 </div>
             </section>
 
             <footer class="composer">
-                <textarea id="prompt-input" placeholder="Ask the system to research, compare, summarize, or plan..."></textarea>
+                <textarea id="prompt-input" placeholder="Ask the system to inspect the repo, plan an implementation, review code, or propose file changes..."></textarea>
                 <div class="composer-actions">
                     <span id="status-pill" class="status-pill">Idle</span>
                     <button id="send-button" class="primary-button">Send</button>
@@ -70,7 +77,7 @@
                     <input id="model-input" type="text" value="gpt-4.1-mini">
                 </label>
                 <label>
-                    <span>Max concurrent research workers</span>
+                    <span>Max concurrent worker tasks</span>
                     <input id="concurrency-input" type="number" min="1" max="12" value="4">
                 </label>
                 <button type="submit" class="primary-button">Save settings</button>

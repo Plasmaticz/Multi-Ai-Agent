@@ -4,6 +4,7 @@ import argparse
 import os
 
 import uvicorn
+from app.main import create_app
 
 
 def main() -> None:
@@ -20,12 +21,22 @@ def main() -> None:
     if args.environment:
         os.environ["ENVIRONMENT"] = args.environment
 
+    if args.reload:
+        uvicorn.run(
+            "app.main:create_app",
+            factory=True,
+            host=args.host,
+            port=args.port,
+            reload=True,
+        )
+        return
+
     uvicorn.run(
-        "app.main:create_app",
-        factory=True,
+        create_app(),
+        factory=False,
         host=args.host,
         port=args.port,
-        reload=args.reload,
+        reload=False,
     )
 
 

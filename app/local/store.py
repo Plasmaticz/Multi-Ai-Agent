@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -148,6 +149,17 @@ class LocalAppStore:
             connection.commit()
         return self.get_thread(thread_id)
 
+    def delete_thread(self, thread_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM threads
+                WHERE id = ?
+                """,
+                (thread_id,),
+            )
+            connection.commit()
+
     def get_thread(self, thread_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -165,8 +177,7 @@ class LocalAppStore:
         if not thread or thread["title"] != "New Thread":
             return
 
-        title = " ".join(content.strip().split())
-        title = title[:60] or "New Thread"
+        title = self._derive_thread_title(content)
         self.update_thread(thread_id, title=title)
 
     def update_thread(self, thread_id: str, *, title: str | None = None) -> None:
@@ -199,6 +210,98 @@ class LocalAppStore:
                 (summary, utcnow_iso(), thread_id),
             )
             connection.commit()
+
+    def _derive_thread_title(self, content: str) -> str:
+        normalized = " ".join(content.strip().split())
+        if not normalized:
+            return "New Thread"
+
+        normalized = re.sub(
+            r"^(please|can you|could you|would you|help me|i want to|let's|lets)\s+",
+            "",
+            normalized,
+            flags=re.IGNORECASE,
+        ).strip(" .!?")
+
+        tokens = re.findall(r"[A-Za-z0-9+#./-]+", normalized)
+        stopwords = {
+            "a",
+            "an",
+            "the",
+            "to",
+            "for",
+            "of",
+            "and",
+            "or",
+            "in",
+            "on",
+            "with",
+            "that",
+            "this",
+            "these",
+            "those",
+            "please",
+            "make",
+            "build",
+            "add",
+            "create",
+            "implement",
+            "update",
+            "improve",
+            "refactor",
+            "write",
+            "turn",
+            "focus",
+            "now",
+            "only",
+            "include",
+            "into",
+            "from",
+            "our",
+            "your",
+            "their",
+            "app",
+            "repo",
+            "repository",
+            "project",
+            "system",
+        }
+        preferred_casing = {
+            "api": "API",
+            "jwt": "JWT",
+            "ui": "UI",
+            "llm": "LLM",
+            "html": "HTML",
+            "css": "CSS",
+            "js": "JS",
+            "sql": "SQL",
+            "oauth": "OAuth",
+            "fastapi": "FastAPI",
+            "react": "React",
+            "electron": "Electron",
+        }
+
+        title_tokens: list[str] = []
+        for token in tokens:
+            lowered = token.lower()
+            if lowered in stopwords:
+                continue
+            if lowered in preferred_casing:
+                cleaned = preferred_casing[lowered]
+            elif token.isupper() and len(token) <= 5:
+                cleaned = token
+            else:
+                cleaned = token.capitalize()
+            if cleaned not in title_tokens:
+                title_tokens.append(cleaned)
+            if len(title_tokens) == 5:
+                break
+
+        candidate = " ".join(title_tokens).strip()
+        if not candidate:
+            candidate = normalized[:44].strip()
+
+        return candidate[:52] or "New Thread"
 
     def list_messages(self, thread_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:

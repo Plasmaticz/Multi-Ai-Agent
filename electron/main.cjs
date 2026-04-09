@@ -55,6 +55,13 @@ function createWindow() {
       nodeIntegration: false
     }
   });
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+    if (!app.isQuitting) {
+      app.quit();
+    }
+  });
 }
 
 async function startBackend() {
@@ -188,11 +195,14 @@ app.whenReady().then(async () => {
 });
 
 app.on("before-quit", () => {
+  app.isQuitting = true;
+  stopBackend();
+});
+
+app.on("will-quit", () => {
   stopBackend();
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
+  app.quit();
 });

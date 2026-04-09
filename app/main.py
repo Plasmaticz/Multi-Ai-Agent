@@ -26,7 +26,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(static_dir())), name="static")
     app.include_router(app_router)
 
-    @app.get("/health")
+    @app.api_route("/health", methods=["GET", "HEAD"])
     def health() -> dict[str, str]:
         return {"status": "ok"}
 

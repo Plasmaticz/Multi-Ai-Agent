@@ -1,102 +1,106 @@
 import time
 
 from app.config import Settings
-from app.schemas.state import Source
-from app.tools.web_search import StubSearchProvider
+from app.schemas.state import CodeChange, RepoFinding, WorkerArtifact
 from app.workflows.run_crew import CrewRunner
 
 
-def test_workflow_completes_with_required_sections():
-    provider = StubSearchProvider(
-        catalog={
-            "Archireef": [
-                Source(
-                    title="Archireef Tech Overview",
-                    url="https://example.com/archireef-tech",
-                    snippet="Archireef uses 3D printed reef tiles and focuses on scalable deployment.",
-                ),
-                Source(
-                    title="Archireef Funding",
-                    url="https://example.com/archireef-funding",
-                    snippet="Archireef reports project cost planning and long-term restoration economics.",
-                ),
-            ],
-            "Coral Vita": [
-                Source(
-                    title="Coral Vita Model",
-                    url="https://example.com/coralvita-model",
-                    snippet="Coral Vita grows climate-resilient corals and expands across coastal markets.",
-                ),
-                Source(
-                    title="Coral Vita Cost",
-                    url="https://example.com/coralvita-cost",
-                    snippet="Coral Vita describes cost structure and global scale partnerships.",
-                ),
-            ],
-            "SECORE International": [
-                Source(
-                    title="SECORE Technology",
-                    url="https://example.com/secore-tech",
-                    snippet="SECORE International develops coral propagation technology and restoration methods.",
-                ),
-                Source(
-                    title="SECORE Scale",
-                    url="https://example.com/secore-scale",
-                    snippet="SECORE International coordinates scalable reef restoration pilots.",
-                ),
-            ],
-        }
-    )
-
+def test_workflow_produces_coding_plan(tmp_path):
+    workspace = _create_workspace(tmp_path)
     settings = Settings(
+        app_name="Multi-Agent Coding Copilot",
         openai_api_key="",
+        workspace_dir=str(workspace),
         max_review_loops=1,
-        min_sources_per_company=2,
-        default_companies="Archireef,Coral Vita,SECORE International",
+        max_concurrent_research=3,
     )
-    runner = CrewRunner(settings=settings, search_provider=provider)
+    runner = CrewRunner(settings=settings)
 
-    state = runner.run(
-        goal="Compare 3 coral restoration startups by cost, scalability, and technology"
-    )
+    state = runner.run(goal="Add JWT auth to the FastAPI app and write tests")
 
     assert state.status == "complete"
-    assert len(state.research_notes) == 3
+    assert state.deliverable_type == "implementation"
+    assert len(state.repo_findings) >= 1
+    assert len(state.implementation_plan) >= 2
+    assert len(state.worker_outputs) == len(state.implementation_plan)
     assert len(state.review_notes) >= 1
+    assert state.validation_commands
     assert state.metadata.get("llm_enabled") is False
-    assert all(task["status"] == "completed" for task in state.tasks)
+    assert state.metadata.get("implementation_concurrency") == 3
+    assert all(task["status"] in {"completed", "failed"} for task in state.tasks)
 
     output = state.final_output.lower()
-    assert "executive summary" in output
-    assert "comparison table" in output
-    assert "sources" in output
-    assert "http" in output
+    assert "requested change" in output
+    assert "proposed file changes" in output
+    assert "validation commands" in output
 
 
-def test_research_runs_concurrently():
+def test_parallel_code_workers_run_concurrently(tmp_path):
+    workspace = _create_workspace(tmp_path)
     settings = Settings(
+        app_name="Multi-Agent Coding Copilot",
         openai_api_key="",
+        workspace_dir=str(workspace),
         max_review_loops=0,
-        min_sources_per_company=1,
         max_concurrent_research=3,
-        default_companies="Alpha Labs,Beta Reef,Gamma Marine",
     )
-    runner = CrewRunner(settings=settings, search_provider=StubSearchProvider())
+    runner = CrewRunner(settings=settings)
 
-    def slow_research(company: str, goal: str, criteria: list[str], max_sources: int = 4):
+    def fake_explore(goal: str, run_context=None, limit: int = 10):
+        return [
+            RepoFinding(file_path="app/api/routes.py", line_number=1, summary="Backend route", excerpt="JWT auth route", score=5.0),
+            RepoFinding(file_path="static/js/app.js", line_number=1, summary="Frontend login UI", excerpt="login button", score=4.0),
+            RepoFinding(file_path="tests/test_auth.py", line_number=1, summary="Token tests", excerpt="invalid token", score=4.0),
+        ]
+
+    def slow_implement(goal, work_item, findings, run_context=None, revision_focus=None):
         time.sleep(0.25)
-        return runner._build_failed_research_note(company=company, goal=goal, error="synthetic")
+        return WorkerArtifact(
+            work_item_id=work_item.work_item_id,
+            owner=work_item.owner,
+            summary=f"Synthetic artifact for {work_item.title}",
+            files_touched=work_item.write_scope[:1],
+            code_changes=[
+                CodeChange(
+                    file_path=work_item.write_scope[0],
+                    change_type="modify",
+                    summary="Synthetic change",
+                    proposal="Implement the requested coding update.",
+                )
+            ],
+            tests_to_run=["pytest -q"],
+            risks=[],
+            confidence=0.8,
+        )
 
-    runner.researcher.research_company = slow_research
+    runner.repo_explorer.explore = fake_explore
+    runner.code_worker.implement = slow_implement
 
     started_at = time.perf_counter()
-    state = runner.run(
-        goal="Compare three companies",
-        companies=["Alpha Labs", "Beta Reef", "Gamma Marine"],
-    )
+    state = runner.run(goal="Add auth UI, backend JWT handling, and tests")
     elapsed = time.perf_counter() - started_at
 
-    assert state.status == "needs_human_review"
-    assert len(state.research_notes) == 3
-    assert state.metadata.get("research_concurrency") == 3
-    assert elapsed < 0.55
+    assert state.status == "complete"
+    assert len(state.worker_outputs) == 3
+    assert elapsed < 0.65
+
+
+def _create_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    (workspace / "app/api").mkdir(parents=True, exist_ok=True)
+    (workspace / "static/js").mkdir(parents=True, exist_ok=True)
+    (workspace / "tests").mkdir(parents=True, exist_ok=True)
+
+    (workspace / "app/api/routes.py").write_text(
+        "from fastapi import APIRouter\n\nrouter = APIRouter()\n\n# TODO: add JWT auth route and token validation\n",
+        encoding="utf-8",
+    )
+    (workspace / "static/js/app.js").write_text(
+        "const loginButton = document.getElementById('login-button');\n// TODO: wire login flow\n",
+        encoding="utf-8",
+    )
+    (workspace / "tests/test_auth.py").write_text(
+        "def test_invalid_token_rejected():\n    assert True\n",
+        encoding="utf-8",
+    )
+    return workspace
