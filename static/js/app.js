@@ -20,6 +20,7 @@ document.getElementById("open-settings-button").addEventListener("click", openSe
 document.getElementById("open-logs-button").addEventListener("click", openLogs);
 deleteThreadButton.addEventListener("click", deleteActiveThread);
 document.getElementById("settings-form").addEventListener("submit", saveSettings);
+document.getElementById("choose-workspace-button").addEventListener("click", chooseWorkspaceFolder);
 
 for (const button of document.querySelectorAll("[data-close-modal]")) {
   button.addEventListener("click", () => closeModal(button.dataset.closeModal));
@@ -110,7 +111,7 @@ async function loadThread(threadId) {
   stopRunPolling({ preserveStatus: true });
   state.activeThreadId = threadId;
   const payload = await fetchJson(`/api/threads/${threadId}`);
-  renderThread(payload.thread, payload.messages, payload.events || []);
+  renderThread(payload.thread, payload.messages, payload.events || [], { scrollMode: "force-bottom" });
   renderThreads();
   applyRunState(payload.active_run);
   syncDeleteThreadButton();
@@ -138,7 +139,8 @@ function renderThreads() {
   }
 }
 
-function renderThread(thread, messages, events = []) {
+function renderThread(thread, messages, events = [], { scrollMode = "preserve" } = {}) {
+  const scrollState = captureChatScrollState();
   threadTitle.textContent = thread.title;
   chatPanel.classList.remove("empty");
   chatPanel.innerHTML = "";
@@ -171,7 +173,7 @@ function renderThread(thread, messages, events = []) {
     chatPanel.appendChild(article);
   }
 
-  chatPanel.scrollTop = chatPanel.scrollHeight;
+  applyScrollMode(scrollState, scrollMode);
 }
 
 function renderEmptyThreadState() {
@@ -303,7 +305,7 @@ async function sendPrompt() {
       return;
     }
 
-    renderThread(payload.thread, payload.messages, payload.events || []);
+    renderThread(payload.thread, payload.messages, payload.events || [], { scrollMode: "if-near-bottom" });
     const initialRun = payload.active_run || payload.run;
     const fallbackStatus = initialRun?.status === "failed" ? "Failed" : "Idle";
     applyRunState(initialRun, fallbackStatus);
@@ -384,7 +386,7 @@ async function pollRun(runId) {
   }
 
   const payload = await fetchJson(`/api/threads/${state.activeThreadId}/runs/${runId}`);
-  renderThread(payload.thread, payload.messages, payload.events || []);
+  renderThread(payload.thread, payload.messages, payload.events || [], { scrollMode: "preserve" });
 
   if (payload.run && payload.run.status === "running") {
     setStatus("Running");
@@ -405,10 +407,41 @@ async function safeReloadActiveThread() {
   }
   try {
     const payload = await fetchJson(`/api/threads/${state.activeThreadId}`);
-    renderThread(payload.thread, payload.messages, payload.events || []);
+    renderThread(payload.thread, payload.messages, payload.events || [], { scrollMode: "preserve" });
   } catch (error) {
     console.error(error);
   }
+}
+
+function captureChatScrollState() {
+  return {
+    top: chatPanel.scrollTop,
+    height: chatPanel.scrollHeight,
+    wasNearBottom: isNearBottom(),
+  };
+}
+
+function applyScrollMode(scrollState, scrollMode) {
+  if (scrollMode === "force-bottom") {
+    chatPanel.scrollTop = chatPanel.scrollHeight;
+    return;
+  }
+
+  if (!scrollState) {
+    return;
+  }
+
+  if (scrollMode === "if-near-bottom" && scrollState.wasNearBottom) {
+    chatPanel.scrollTop = chatPanel.scrollHeight;
+    return;
+  }
+
+  chatPanel.scrollTop = scrollState.top;
+}
+
+function isNearBottom() {
+  const threshold = 48;
+  return chatPanel.scrollHeight - chatPanel.scrollTop - chatPanel.clientHeight <= threshold;
 }
 
 async function openSettings() {
@@ -416,11 +449,30 @@ async function openSettings() {
   document.getElementById("api-key-input").value = "";
   document.getElementById("clear-api-key-input").checked = false;
   document.getElementById("model-input").value = payload.openai_model;
+  document.getElementById("workspace-input").value = payload.workspace_dir;
   document.getElementById("concurrency-input").value = payload.max_concurrent_research;
   document.getElementById("api-key-preview").textContent = payload.has_api_key
     ? `Saved key: ${payload.api_key_preview}`
     : "No API key saved yet.";
+  document.getElementById("choose-workspace-button").disabled = !window.desktopApp?.chooseWorkspaceDirectory;
   openModal("settings-modal");
+}
+
+async function chooseWorkspaceFolder() {
+  if (!window.desktopApp?.chooseWorkspaceDirectory) {
+    return;
+  }
+
+  try {
+    const selectedPath = await window.desktopApp.chooseWorkspaceDirectory();
+    if (!selectedPath) {
+      return;
+    }
+    document.getElementById("workspace-input").value = selectedPath;
+  } catch (error) {
+    console.error(error);
+    window.alert("Could not choose a workspace folder.");
+  }
 }
 
 async function saveSettings(event) {
@@ -430,6 +482,7 @@ async function saveSettings(event) {
     openai_api_key: document.getElementById("api-key-input").value,
     clear_api_key: document.getElementById("clear-api-key-input").checked,
     openai_model: document.getElementById("model-input").value,
+    workspace_dir: document.getElementById("workspace-input").value,
     max_concurrent_research: Number(document.getElementById("concurrency-input").value),
   };
 
@@ -440,6 +493,7 @@ async function saveSettings(event) {
   });
   const payload = await readJson(response);
   if (!response.ok) {
+    window.alert(payload.detail || "Failed to save settings.");
     return;
   }
 

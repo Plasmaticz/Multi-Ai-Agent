@@ -77,8 +77,17 @@
                     <input id="model-input" type="text" value="gpt-4.1-mini">
                 </label>
                 <label>
-                    <span>Max concurrent worker tasks</span>
+                    <span>Workspace folder</span>
+                    <div class="inline-input-row">
+                        <input id="workspace-input" type="text" placeholder="/path/to/your/project">
+                        <button id="choose-workspace-button" type="button" class="ghost-button">Choose Folder</button>
+                    </div>
+                    <small>Repo analysis will stay inside this folder and will not read past that root.</small>
+                </label>
+                <label>
+                    <span>How many threads would you like to use?</span>
                     <input id="concurrency-input" type="number" min="1" max="12" value="4">
+                    <small>This sets the maximum number of parallel AI worker threads used during a run.</small>
                 </label>
                 <button type="submit" class="primary-button">Save settings</button>
             </form>

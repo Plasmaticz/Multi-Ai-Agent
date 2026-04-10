@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from time import perf_counter
 from typing import Any, Callable
 
 from app.agents.architect import ArchitectAgent
@@ -53,9 +54,21 @@ class CrewRunner:
         run_context: RunContext | None = None,
     ) -> ProjectState:
         state = self.orchestrator.initialize_project(goal=goal, request_id=request_id)
+        run_started_at = perf_counter()
         state.run_context = run_context
         state.metadata["llm_enabled"] = self.llm_client.enabled
         state.metadata["implementation_concurrency"] = max(1, self.settings.max_concurrent_research)
+        state.metadata["thread_count"] = max(1, self.settings.max_concurrent_research)
+        state.metadata["execution_metrics"] = {
+            "configured_thread_count": max(1, self.settings.max_concurrent_research),
+            "active_worker_threads": 0,
+            "total_run_time_ms": 0.0,
+            "parallel_worker_wall_time_ms": 0.0,
+            "estimated_sequential_worker_time_ms": 0.0,
+            "parallel_speedup": 1.0,
+            "worker_runtimes_ms": {},
+            "implementation_passes": [],
+        }
 
         state.tasks = [
             {
@@ -175,6 +188,8 @@ class CrewRunner:
         state.status = "complete" if state.review_notes and state.review_notes[-1].passed else "needs_human_review"
         self._emit_event("orchestrator", "finalize", "started", "Finalizing coding response.")
         self._set_task_status(state, TaskType.finalize, TaskStatus.in_progress)
+        execution_metrics = state.metadata.setdefault("execution_metrics", {})
+        execution_metrics["total_run_time_ms"] = round((perf_counter() - run_started_at) * 1000, 2)
         state.final_output = self.finalizer.finalize(state, state.worker_outputs)
         self._set_task_status(
             state,
@@ -187,6 +202,7 @@ class CrewRunner:
             "completed" if state.status == "complete" else "failed",
             "Coding workflow completed." if state.status == "complete" else "Coding workflow needs human review.",
         )
+        execution_metrics["total_run_time_ms"] = round((perf_counter() - run_started_at) * 1000, 2)
         state.touch()
         self.store.save(state)
         return state
@@ -200,8 +216,10 @@ class CrewRunner:
         if not work_items:
             return []
 
+        phase_started_at = perf_counter()
         worker_count = min(len(work_items), max(1, self.settings.max_concurrent_research))
         outputs_by_item: dict[str, WorkerArtifact] = {}
+        worker_durations_ms: dict[str, float] = {}
         for work_item in work_items:
             self._set_task_status(
                 state,
@@ -221,12 +239,12 @@ class CrewRunner:
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             future_to_item = {
                 executor.submit(
-                    self.code_worker.implement,
-                    goal=state.user_goal,
-                    work_item=work_item,
-                    findings=state.repo_findings,
-                    run_context=state.run_context,
-                    revision_focus=revision_focus,
+                    self._execute_work_item,
+                    state.user_goal,
+                    work_item,
+                    state.repo_findings,
+                    state.run_context,
+                    revision_focus,
                 ): work_item
                 for work_item in work_items
             }
@@ -234,24 +252,53 @@ class CrewRunner:
             for future in as_completed(future_to_item):
                 work_item = future_to_item[future]
                 try:
-                    outputs_by_item[work_item.work_item_id] = future.result()
-                    self._set_task_status(
-                        state,
-                        TaskType.implement,
-                        TaskStatus.completed,
-                        work_item_id=work_item.work_item_id,
-                    )
-                    self._emit_event(
-                        work_item.owner,
-                        "implement_work_item",
-                        "completed",
-                        f"Completed {work_item.title}.",
-                    )
+                    artifact, runtime_ms, error = future.result()
+                    worker_durations_ms[work_item.owner] = round(runtime_ms, 2)
+                    if error is None and artifact is not None:
+                        artifact.runtime_ms = round(runtime_ms, 2)
+                        outputs_by_item[work_item.work_item_id] = artifact
+                        self._set_task_status(
+                            state,
+                            TaskType.implement,
+                            TaskStatus.completed,
+                            work_item_id=work_item.work_item_id,
+                        )
+                        self._emit_event(
+                            work_item.owner,
+                            "implement_work_item",
+                            "completed",
+                            f"Completed {work_item.title} in {runtime_ms:.2f} ms.",
+                        )
+                    else:
+                        outputs_by_item[work_item.work_item_id] = WorkerArtifact(
+                            work_item_id=work_item.work_item_id,
+                            owner=work_item.owner,
+                            summary=f"Worker failed for {work_item.title}: {error}",
+                            runtime_ms=round(runtime_ms, 2),
+                            files_touched=work_item.write_scope,
+                            code_changes=[],
+                            tests_to_run=[],
+                            risks=[f"Worker execution failed: {error}"],
+                            confidence=0.0,
+                        )
+                        self._set_task_status(
+                            state,
+                            TaskType.implement,
+                            TaskStatus.failed,
+                            work_item_id=work_item.work_item_id,
+                        )
+                        self._emit_event(
+                            work_item.owner,
+                            "implement_work_item",
+                            "failed",
+                            f"Failed {work_item.title} after {runtime_ms:.2f} ms: {error}",
+                        )
                 except Exception as exc:
                     outputs_by_item[work_item.work_item_id] = WorkerArtifact(
                         work_item_id=work_item.work_item_id,
                         owner=work_item.owner,
                         summary=f"Worker failed for {work_item.title}: {exc}",
+                        runtime_ms=0.0,
                         files_touched=work_item.write_scope,
                         code_changes=[],
                         tests_to_run=[],
@@ -273,7 +320,85 @@ class CrewRunner:
                 state.touch()
                 self.store.save(state)
 
+        phase_wall_time_ms = round((perf_counter() - phase_started_at) * 1000, 2)
+        sequential_baseline_ms = round(sum(worker_durations_ms.values()), 2)
+        speedup = round(sequential_baseline_ms / phase_wall_time_ms, 2) if phase_wall_time_ms > 0 else 1.0
+        self._record_implementation_metrics(
+            state=state,
+            worker_count=worker_count,
+            worker_durations_ms=worker_durations_ms,
+            phase_wall_time_ms=phase_wall_time_ms,
+            sequential_baseline_ms=sequential_baseline_ms,
+            speedup=speedup,
+            revision_focus=revision_focus,
+        )
+
         return [outputs_by_item[item.work_item_id] for item in work_items if item.work_item_id in outputs_by_item]
+
+    def _execute_work_item(
+        self,
+        goal: str,
+        work_item: WorkItem,
+        findings,
+        run_context: RunContext | None,
+        revision_focus: str | None,
+    ) -> tuple[WorkerArtifact | None, float, str | None]:
+        started_at = perf_counter()
+        try:
+            artifact = self.code_worker.implement(
+                goal=goal,
+                work_item=work_item,
+                findings=findings,
+                run_context=run_context,
+                revision_focus=revision_focus,
+            )
+            return artifact, (perf_counter() - started_at) * 1000, None
+        except Exception as exc:  # pragma: no cover - normalized into worker artifacts
+            return None, (perf_counter() - started_at) * 1000, str(exc)
+
+    def _record_implementation_metrics(
+        self,
+        *,
+        state: ProjectState,
+        worker_count: int,
+        worker_durations_ms: dict[str, float],
+        phase_wall_time_ms: float,
+        sequential_baseline_ms: float,
+        speedup: float,
+        revision_focus: str | None,
+    ) -> None:
+        execution_metrics = state.metadata.setdefault("execution_metrics", {})
+        implementation_passes = execution_metrics.setdefault("implementation_passes", [])
+        implementation_passes.append(
+            {
+                "configured_thread_count": max(1, self.settings.max_concurrent_research),
+                "active_worker_threads": worker_count,
+                "phase": "revision" if revision_focus else "initial",
+                "parallel_worker_wall_time_ms": phase_wall_time_ms,
+                "estimated_sequential_worker_time_ms": sequential_baseline_ms,
+                "parallel_speedup": speedup,
+                "worker_runtimes_ms": worker_durations_ms,
+            }
+        )
+        execution_metrics["configured_thread_count"] = max(1, self.settings.max_concurrent_research)
+        execution_metrics["active_worker_threads"] = worker_count
+        execution_metrics["parallel_worker_wall_time_ms"] = round(
+            sum(item["parallel_worker_wall_time_ms"] for item in implementation_passes),
+            2,
+        )
+        execution_metrics["estimated_sequential_worker_time_ms"] = round(
+            sum(item["estimated_sequential_worker_time_ms"] for item in implementation_passes),
+            2,
+        )
+        total_parallel = execution_metrics["parallel_worker_wall_time_ms"]
+        total_sequential = execution_metrics["estimated_sequential_worker_time_ms"]
+        execution_metrics["parallel_speedup"] = round(total_sequential / total_parallel, 2) if total_parallel > 0 else 1.0
+
+        aggregated_runtimes: dict[str, float] = {}
+        for item in implementation_passes:
+            for owner, duration in item["worker_runtimes_ms"].items():
+                aggregated_runtimes[owner] = round(aggregated_runtimes.get(owner, 0.0) + duration, 2)
+        execution_metrics["worker_runtimes_ms"] = aggregated_runtimes
 
     def _set_task_status(
         self,

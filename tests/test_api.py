@@ -1,10 +1,12 @@
 import time
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
 from app.schemas.state import ProjectState
+from app.tools.repo_tools import RepoSearchTool
 
 
 def test_health_check(tmp_path):
@@ -24,6 +26,8 @@ def test_index_shell_renders(tmp_path):
 
 def test_settings_persist_locally(tmp_path):
     client = _build_client(tmp_path)
+    workspace = tmp_path / "selected-workspace"
+    workspace.mkdir()
 
     initial = client.get("/api/settings")
     assert initial.status_code == 200
@@ -34,17 +38,33 @@ def test_settings_persist_locally(tmp_path):
         json={
             "openai_api_key": "sk-test-123456789",
             "openai_model": "gpt-4.1-mini",
+            "workspace_dir": str(workspace),
             "max_concurrent_research": 3,
         },
     )
     assert saved.status_code == 200
     assert saved.json()["has_api_key"] is True
     assert saved.json()["max_concurrent_research"] == 3
+    assert Path(saved.json()["workspace_dir"]) == workspace.resolve()
 
     loaded = client.get("/api/settings")
     assert loaded.status_code == 200
     assert loaded.json()["has_api_key"] is True
     assert loaded.json()["openai_model"] == "gpt-4.1-mini"
+    assert Path(loaded.json()["workspace_dir"]) == workspace.resolve()
+
+
+def test_settings_reject_invalid_workspace_folder(tmp_path):
+    client = _build_client(tmp_path)
+
+    saved = client.post(
+        "/api/settings",
+        json={
+            "workspace_dir": str(tmp_path / "missing-workspace"),
+        },
+    )
+    assert saved.status_code == 400
+    assert saved.json()["detail"] == "Workspace folder does not exist."
 
 
 def test_metadata_endpoint_uses_runtime_settings(tmp_path):
@@ -206,6 +226,17 @@ def test_delete_thread_removes_it_from_database(tmp_path):
     assert missing.status_code == 404
 
 
+def test_repo_tool_blocks_reads_outside_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside_file = tmp_path / "outside.py"
+    outside_file.write_text("secret = 1\n", encoding="utf-8")
+
+    tool = RepoSearchTool(workspace.resolve())
+
+    assert tool.read_file_excerpt("../outside.py") == ""
+
+
 def _wait_for_run(client: TestClient, thread_id: str, run_id: str, timeout: float = 2.0) -> dict:
     deadline = time.time() + timeout
     last_payload = None
@@ -220,11 +251,13 @@ def _wait_for_run(client: TestClient, thread_id: str, run_id: str, timeout: floa
 
 
 def _build_client(tmp_path, environment: str = "dev") -> TestClient:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
     app = create_app(
         Settings(
             app_name="Multi-Agent Coding Copilot",
             app_data_dir=str(tmp_path / "app-data"),
-            workspace_dir=str(tmp_path / "workspace"),
+            workspace_dir=str(workspace),
             openai_api_key="",
             environment=environment,
         )

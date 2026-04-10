@@ -9,6 +9,7 @@ class FinalizerAgent(BaseAgent):
         super().__init__(name="finalizer", role="delivery")
 
     def finalize(self, state: ProjectState, worker_outputs: list[WorkerArtifact]) -> str:
+        execution_metrics = state.metadata.get("execution_metrics", {})
         sections: list[str] = [
             "# Multi-Agent Coding Plan",
             "## Requested Change",
@@ -71,6 +72,28 @@ class FinalizerAgent(BaseAgent):
         sections.append("## Validation Commands")
         sections.extend(f"- `{command}`" for command in state.validation_commands or ["pytest -q", "python3 -m py_compile app"])
 
+        sections.append("## Execution Metrics")
+        if execution_metrics:
+            sections.append(f"- Configured thread count: `{execution_metrics.get('configured_thread_count', 1)}`")
+            sections.append(f"- Active worker threads: `{execution_metrics.get('active_worker_threads', 0)}`")
+            sections.append(f"- Total run time: `{self._format_ms(execution_metrics.get('total_run_time_ms', 0.0))}`")
+            sections.append(
+                f"- Parallel worker wall time: `{self._format_ms(execution_metrics.get('parallel_worker_wall_time_ms', 0.0))}`"
+            )
+            sections.append(
+                f"- Estimated sequential baseline: `{self._format_ms(execution_metrics.get('estimated_sequential_worker_time_ms', 0.0))}`"
+            )
+            sections.append(f"- Parallel speedup: `{execution_metrics.get('parallel_speedup', 1.0)}x`")
+            worker_runtimes = execution_metrics.get("worker_runtimes_ms", {})
+            if worker_runtimes:
+                sections.append("Per-worker run time:")
+                sections.extend(
+                    f"- `{owner}`: `{self._format_ms(duration_ms)}`"
+                    for owner, duration_ms in worker_runtimes.items()
+                )
+        else:
+            sections.append("- Execution metrics were not captured for this run.")
+
         sections.append("## Remaining Risks")
         all_risks: list[str] = []
         for artifact in worker_outputs:
@@ -81,3 +104,6 @@ class FinalizerAgent(BaseAgent):
             sections.append("- Review generated no additional risks.")
 
         return "\n\n".join(section for section in sections if section)
+
+    def _format_ms(self, value: float) -> str:
+        return f"{float(value):.2f} ms"

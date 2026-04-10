@@ -55,7 +55,8 @@ textarea {
 .topbar,
 .composer-actions,
 .modal-header,
-.checkbox-row {
+.checkbox-row,
+.inline-input-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -503,6 +504,14 @@ textarea {
     background: transparent;
     color: var(--panel-strong);
     border: 1px solid var(--line);
+}
+
+.inline-input-row {
+    align-items: stretch;
+}
+
+.inline-input-row input {
+    flex: 1;
 }
 
 .danger-button {

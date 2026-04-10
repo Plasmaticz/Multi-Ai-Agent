@@ -73,6 +73,7 @@ class WorkerArtifact(BaseModel):
     work_item_id: str
     owner: str
     summary: str
+    runtime_ms: float = Field(default=0.0, ge=0.0)
     files_touched: list[str] = Field(default_factory=list)
     code_changes: list[CodeChange] = Field(default_factory=list)
     tests_to_run: list[str] = Field(default_factory=list)

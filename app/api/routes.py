@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -29,6 +30,7 @@ class SettingsRequest(BaseModel):
     openai_api_key: str | None = None
     clear_api_key: bool = False
     openai_model: str | None = None
+    workspace_dir: str | None = None
     max_concurrent_research: int | None = Field(default=None, ge=1, le=12)
 
 
@@ -161,6 +163,8 @@ def save_settings(payload: SettingsRequest, request: Request) -> dict[str, Any]:
         openai_api_key = request.app.state.settings.openai_api_key
 
     openai_model = payload.openai_model or existing.get("openai_model") or request.app.state.settings.openai_model
+    workspace_dir = payload.workspace_dir or existing.get("workspace_dir") or request.app.state.settings.workspace_dir
+    normalized_workspace_dir = _normalize_workspace_dir(workspace_dir)
     max_concurrent_research = (
         payload.max_concurrent_research
         or existing.get("max_concurrent_research")
@@ -170,6 +174,7 @@ def save_settings(payload: SettingsRequest, request: Request) -> dict[str, Any]:
     store.save_settings(
         openai_api_key=openai_api_key,
         openai_model=openai_model,
+        workspace_dir=normalized_workspace_dir,
         max_concurrent_research=int(max_concurrent_research),
     )
     return _settings_response(request)
@@ -300,8 +305,8 @@ def _resolve_runtime_settings(request: Request) -> Settings:
     base_settings = request.app.state.settings
     stored = request.app.state.local_store.get_settings()
     updates: dict[str, Any] = {}
-    for key in ("openai_api_key", "openai_model", "max_concurrent_research"):
-        if key in stored:
+    for key in ("openai_api_key", "openai_model", "workspace_dir", "max_concurrent_research"):
+        if stored.get(key) not in (None, ""):
             updates[key] = stored.get(key)
     return base_settings.model_copy(update=updates)
 
@@ -323,8 +328,18 @@ def _settings_response(request: Request) -> dict[str, Any]:
         "has_api_key": has_api_key,
         "api_key_preview": api_key_preview,
         "openai_model": stored.get("openai_model") or base_settings.openai_model,
+        "workspace_dir": stored.get("workspace_dir") or str(base_settings.workspace_path),
         "max_concurrent_research": stored.get("max_concurrent_research") or base_settings.max_concurrent_research,
     }
+
+
+def _normalize_workspace_dir(value: str) -> str:
+    candidate = Path(value).expanduser().resolve()
+    if not candidate.exists():
+        raise HTTPException(status_code=400, detail="Workspace folder does not exist.")
+    if not candidate.is_dir():
+        raise HTTPException(status_code=400, detail="Workspace folder must be a directory.")
+    return str(candidate)
 
 
 def _mask_api_key(value: str | None) -> str:

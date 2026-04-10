@@ -1,5 +1,6 @@
-const { contextBridge } = require("electron");
+const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("desktopApp", {
-  platform: process.platform
+  platform: process.platform,
+  chooseWorkspaceDirectory: () => ipcRenderer.invoke("dialog:choose-workspace-directory")
 });

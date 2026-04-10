@@ -82,6 +82,7 @@ class LocalAppStore:
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     openai_api_key TEXT,
                     openai_model TEXT,
+                    workspace_dir TEXT,
                     max_concurrent_research INTEGER,
                     updated_at TEXT NOT NULL
                 );
@@ -105,6 +106,14 @@ class LocalAppStore:
         if "message_type" not in message_columns:
             connection.execute(
                 "ALTER TABLE messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text'"
+            )
+
+        settings_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(user_settings)").fetchall()
+        }
+        if "workspace_dir" not in settings_columns:
+            connection.execute(
+                "ALTER TABLE user_settings ADD COLUMN workspace_dir TEXT"
             )
 
     def list_threads(self) -> list[dict[str, Any]]:
@@ -479,7 +488,7 @@ class LocalAppStore:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT openai_api_key, openai_model, max_concurrent_research, updated_at
+                SELECT openai_api_key, openai_model, workspace_dir, max_concurrent_research, updated_at
                 FROM user_settings
                 WHERE id = 1
                 """
@@ -491,21 +500,23 @@ class LocalAppStore:
         *,
         openai_api_key: str | None,
         openai_model: str,
+        workspace_dir: str,
         max_concurrent_research: int,
     ) -> dict[str, Any]:
         now = utcnow_iso()
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO user_settings (id, openai_api_key, openai_model, max_concurrent_research, updated_at)
-                VALUES (1, ?, ?, ?, ?)
+                INSERT INTO user_settings (id, openai_api_key, openai_model, workspace_dir, max_concurrent_research, updated_at)
+                VALUES (1, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     openai_api_key = excluded.openai_api_key,
                     openai_model = excluded.openai_model,
+                    workspace_dir = excluded.workspace_dir,
                     max_concurrent_research = excluded.max_concurrent_research,
                     updated_at = excluded.updated_at
                 """,
-                (openai_api_key, openai_model, max_concurrent_research, now),
+                (openai_api_key, openai_model, workspace_dir, max_concurrent_research, now),
             )
             connection.commit()
         return self.get_settings()

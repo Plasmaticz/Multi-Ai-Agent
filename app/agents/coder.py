@@ -122,6 +122,7 @@ class CodeWorkerAgent(BaseAgent):
             work_item_id=work_item.work_item_id,
             owner=work_item.owner,
             summary=f"Proposed coding changes for {work_item.title}.",
+            runtime_ms=0.0,
             files_touched=files_touched,
             code_changes=changes,
             tests_to_run=tests_to_run,

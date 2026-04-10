@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain } = require("electron");
 const path = require("path");
 const net = require("net");
 const { spawn } = require("child_process");
@@ -172,6 +172,20 @@ function stopBackend() {
     }
   }, 3000);
 }
+
+ipcMain.handle("dialog:choose-workspace-directory", async () => {
+  const ownerWindow = BrowserWindow.getFocusedWindow() || mainWindow || undefined;
+  const result = await dialog.showOpenDialog(ownerWindow, {
+    properties: ["openDirectory"],
+    title: "Choose Workspace Folder"
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  return result.filePaths[0];
+});
 
 app.whenReady().then(async () => {
   createMenu();

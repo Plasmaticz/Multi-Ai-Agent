@@ -16,7 +16,7 @@ class RepoMatch:
 
 class RepoSearchTool:
     def __init__(self, workspace_path: Path):
-        self.workspace_path = workspace_path
+        self.workspace_path = workspace_path.resolve()
 
     def search(self, query: str, limit: int = 12) -> list[RepoMatch]:
         terms = self._extract_terms(query)
@@ -47,8 +47,8 @@ class RepoSearchTool:
         return ordered[:limit]
 
     def read_file_excerpt(self, file_path: str, line_number: int | None = None, context: int = 6) -> str:
-        path = (self.workspace_path / file_path).resolve()
-        if not path.exists() or not path.is_file():
+        path = self._resolve_within_workspace(file_path)
+        if path is None or not path.exists() or not path.is_file():
             return ""
 
         try:
@@ -135,7 +135,13 @@ class RepoSearchTool:
         for path in self.workspace_path.rglob("*"):
             if len(results) >= limit:
                 break
-            if not path.is_file() or self._is_ignored(path):
+            resolved = path.resolve()
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or self._is_ignored(path)
+                or not self._is_within_workspace(resolved)
+            ):
                 continue
             try:
                 content = path.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -189,6 +195,19 @@ class RepoSearchTool:
     def _is_ignored(self, path: Path) -> bool:
         ignored_parts = {".git", "node_modules", ".venv", "dist", "__pycache__"}
         return any(part in ignored_parts for part in path.parts)
+
+    def _resolve_within_workspace(self, file_path: str) -> Path | None:
+        candidate = (self.workspace_path / file_path).resolve()
+        if not self._is_within_workspace(candidate):
+            return None
+        return candidate
+
+    def _is_within_workspace(self, path: Path) -> bool:
+        try:
+            path.relative_to(self.workspace_path)
+            return True
+        except ValueError:
+            return False
 
 
 import shutil

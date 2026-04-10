@@ -27,12 +27,21 @@ def test_workflow_produces_coding_plan(tmp_path):
     assert state.validation_commands
     assert state.metadata.get("llm_enabled") is False
     assert state.metadata.get("implementation_concurrency") == 3
+    assert state.metadata.get("thread_count") == 3
+    execution_metrics = state.metadata.get("execution_metrics", {})
+    assert execution_metrics.get("configured_thread_count") == 3
+    assert execution_metrics.get("active_worker_threads", 0) >= 1
+    assert execution_metrics.get("total_run_time_ms", 0) >= 0
+    assert execution_metrics.get("parallel_worker_wall_time_ms", 0) >= 0
+    assert execution_metrics.get("estimated_sequential_worker_time_ms", 0) >= 0
+    assert isinstance(execution_metrics.get("worker_runtimes_ms"), dict)
     assert all(task["status"] in {"completed", "failed"} for task in state.tasks)
 
     output = state.final_output.lower()
     assert "requested change" in output
     assert "proposed file changes" in output
     assert "validation commands" in output
+    assert "execution metrics" in output
 
 
 def test_parallel_code_workers_run_concurrently(tmp_path):
@@ -83,6 +92,11 @@ def test_parallel_code_workers_run_concurrently(tmp_path):
     assert state.status == "complete"
     assert len(state.worker_outputs) == 3
     assert elapsed < 0.65
+    execution_metrics = state.metadata.get("execution_metrics", {})
+    assert execution_metrics.get("configured_thread_count") == 3
+    assert execution_metrics.get("active_worker_threads") == 3
+    assert execution_metrics.get("parallel_speedup", 1.0) > 1.0
+    assert len(execution_metrics.get("worker_runtimes_ms", {})) == 3
 
 
 def _create_workspace(tmp_path):

@@ -1,17 +1,18 @@
 # AI Agent Desktop
 
-A local-first desktop application for running a multi-agent coding workflow on your own machine.
+A local-first desktop application for running a multithreaded AI coding workflow on your own machine.
 
-It combines an Electron desktop shell, a FastAPI backend, SQLite persistence, and a coordinated team of AI agents that inspect a repository, plan implementation work, propose code changes, review those proposals, and prepare validation commands from a single prompt.
+It combines an Electron desktop shell, a FastAPI backend, SQLite persistence, and a coordinated team of AI agents that inspect a repository, plan implementation work, fan out independent worker tasks in parallel, review the merged results, and prepare validation commands from a single prompt.
 
 ## Overview
 
-`AI Agent Desktop` is designed to feel like a local coding copilot:
+`AI Agent Desktop` is designed to feel like a local coding copilot with visible concurrent execution:
 
 - create threads
 - delete threads safely with confirmation
 - send implementation prompts in a chat-style interface
 - watch grouped agent progress live in the timeline
+- tune how many worker threads a run can use
 - inspect logs for each run
 - keep all thread history and settings stored locally
 
@@ -19,7 +20,7 @@ The only external dependency is your model provider. In the current version, tha
 
 ## What The Product Does
 
-When you send a prompt, the app runs a centralized multi-agent coding workflow:
+When you send a prompt, the app runs a centralized multi-agent coding workflow with a parallel worker stage:
 
 1. `Orchestrator` plans the coding run.
 2. `Repo Explorer` scans the local repository for relevant files and symbols.
@@ -36,6 +37,15 @@ The app also carries thread memory into later runs using:
 
 That makes follow-up prompts feel more like ongoing implementation work instead of isolated one-off requests.
 
+Each run also records execution metrics so you can evaluate the concurrency model:
+
+- total run time
+- per-worker run time
+- parallel worker wall time
+- estimated sequential baseline
+- parallel speedup
+- configured thread count vs active worker threads
+
 ## Features
 
 - Local desktop app powered by Electron
@@ -45,11 +55,13 @@ That makes follow-up prompts feel more like ongoing implementation work instead 
 - Short thread titles derived from the first prompt
 - Delete-thread flow with confirmation
 - Settings modal for OpenAI API key and model selection
+- Settings control for maximum worker-thread count
 - Logs modal for debugging agent activity
 - Live run activity card in the thread timeline
 - In-thread error rendering for failed runs
 - Repository-aware exploration of local files
 - Parallel code workers with disjoint write scopes
+- Execution metrics for concurrency benchmarking
 - Thread memory via summary plus recent messages
 - Packaged macOS desktop build support
 
@@ -194,6 +206,7 @@ During the run, you should see:
 
 - your user message appear immediately
 - a single activity card showing the agent team and each stage state
+- execution metrics included in the final answer after the run completes
 - a saved assistant response when the run completes
 - logs available in the `Logs` modal
 
@@ -226,7 +239,7 @@ REQUEST_TIMEOUT_SECONDS=15
 - `OPENAI_API_KEY`: required for live OpenAI-backed runs
 - `OPENAI_MODEL`: model used by the LLM-backed agents
 - `WORKSPACE_DIR`: local repository or workspace to inspect
-- `MAX_CONCURRENT_RESEARCH`: current concurrency knob for parallel work items
+- `MAX_CONCURRENT_RESEARCH`: maximum number of parallel AI worker threads to use during a run
 - `APP_DATA_DIR`: location of local SQLite data and app state
 
 ## Desktop Build
@@ -299,6 +312,7 @@ pytest -q
 - Thread context is summarized and reused across later prompts.
 - Architect, code workers, and reviewer are LLM-backed when OpenAI is configured.
 - Code workers run in parallel when they have disjoint scopes.
+- Parallel runs record total runtime, per-worker durations, a sequential baseline estimate, and parallel speedup.
 - The chat timeline shows grouped per-run agent activity rather than raw log spam.
 - Thread deletion is persisted in SQLite and blocked while a run is active.
 - The workflow proposes code changes and validation commands; it does not automatically apply patches to your repo yet.
