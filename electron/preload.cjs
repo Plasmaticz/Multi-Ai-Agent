@@ -2,5 +2,6 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("desktopApp", {
   platform: process.platform,
-  chooseWorkspaceDirectory: () => ipcRenderer.invoke("dialog:choose-workspace-directory")
+  chooseWorkspaceDirectory: () => ipcRenderer.invoke("dialog:choose-workspace-directory"),
+  saveFile: (payload) => ipcRenderer.invoke("dialog:save-file", payload)
 });

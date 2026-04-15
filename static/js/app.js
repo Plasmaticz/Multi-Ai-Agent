@@ -2,6 +2,7 @@ const state = {
   threads: [],
   activeThreadId: null,
   activeRunId: null,
+  latestRun: null,
   isSending: false,
   pollTimer: null,
 };
@@ -13,6 +14,11 @@ const promptInput = document.getElementById("prompt-input");
 const sendButton = document.getElementById("send-button");
 const statusPill = document.getElementById("status-pill");
 const deleteThreadButton = document.getElementById("delete-thread-button");
+const reviewPatchesButton = document.getElementById("review-patches-button");
+const applyChangesButton = document.getElementById("apply-changes-button");
+const exportReportButton = document.getElementById("export-report-button");
+const exportSummaryButton = document.getElementById("export-summary-button");
+const exportLogsButton = document.getElementById("export-logs-button");
 
 document.getElementById("new-thread-button").addEventListener("click", createThread);
 document.getElementById("send-button").addEventListener("click", sendPrompt);
@@ -21,6 +27,11 @@ document.getElementById("open-logs-button").addEventListener("click", openLogs);
 deleteThreadButton.addEventListener("click", deleteActiveThread);
 document.getElementById("settings-form").addEventListener("submit", saveSettings);
 document.getElementById("choose-workspace-button").addEventListener("click", chooseWorkspaceFolder);
+reviewPatchesButton.addEventListener("click", openPatchReview);
+applyChangesButton.addEventListener("click", applyLatestRun);
+exportReportButton.addEventListener("click", () => exportLatestRun("report"));
+exportSummaryButton.addEventListener("click", () => exportLatestRun("summary"));
+exportLogsButton.addEventListener("click", () => exportLatestRun("logs"));
 
 for (const button of document.querySelectorAll("[data-close-modal]")) {
   button.addEventListener("click", () => closeModal(button.dataset.closeModal));
@@ -38,6 +49,7 @@ boot();
 async function boot() {
   await loadThreads();
   syncDeleteThreadButton();
+  syncRunActionButtons();
   if (state.threads.length > 0) {
     await loadThread(state.threads[0].id);
   } else {
@@ -87,6 +99,7 @@ async function deleteActiveThread() {
     stopRunPolling();
     state.activeThreadId = null;
     state.activeRunId = null;
+    state.latestRun = null;
     state.isSending = false;
     sendButton.disabled = false;
     setStatus("Idle");
@@ -111,10 +124,12 @@ async function loadThread(threadId) {
   stopRunPolling({ preserveStatus: true });
   state.activeThreadId = threadId;
   const payload = await fetchJson(`/api/threads/${threadId}`);
+  state.latestRun = payload.active_run || payload.latest_run || null;
   renderThread(payload.thread, payload.messages, payload.events || [], { scrollMode: "force-bottom" });
   renderThreads();
   applyRunState(payload.active_run);
   syncDeleteThreadButton();
+  syncRunActionButtons();
 }
 
 function renderThreads() {
@@ -178,6 +193,7 @@ function renderThread(thread, messages, events = [], { scrollMode = "preserve" }
 
 function renderEmptyThreadState() {
   threadTitle.textContent = "Select a thread";
+  state.latestRun = null;
   chatPanel.classList.add("empty");
   chatPanel.innerHTML = `
     <div class="empty-state">
@@ -307,6 +323,7 @@ async function sendPrompt() {
 
     renderThread(payload.thread, payload.messages, payload.events || [], { scrollMode: "if-near-bottom" });
     const initialRun = payload.active_run || payload.run;
+    state.latestRun = payload.latest_run || payload.run || state.latestRun;
     const fallbackStatus = initialRun?.status === "failed" ? "Failed" : "Idle";
     applyRunState(initialRun, fallbackStatus);
   } catch (error) {
@@ -333,12 +350,16 @@ function renderOptimisticUserMessage(content) {
 }
 
 function applyRunState(run, fallbackStatus = "Idle") {
+  if (!run && state.latestRun?.status === "running") {
+    run = state.latestRun;
+  }
   if (run && run.status === "running") {
     state.activeRunId = run.id;
     state.isSending = true;
     sendButton.disabled = true;
     setStatus("Running");
     syncDeleteThreadButton();
+    syncRunActionButtons();
     startRunPolling(run.id);
     return;
   }
@@ -349,6 +370,7 @@ function applyRunState(run, fallbackStatus = "Idle") {
   state.activeRunId = null;
   setStatus(fallbackStatus);
   syncDeleteThreadButton();
+  syncRunActionButtons();
 }
 
 function startRunPolling(runId) {
@@ -386,10 +408,12 @@ async function pollRun(runId) {
   }
 
   const payload = await fetchJson(`/api/threads/${state.activeThreadId}/runs/${runId}`);
+  state.latestRun = payload.run || payload.latest_run || state.latestRun;
   renderThread(payload.thread, payload.messages, payload.events || [], { scrollMode: "preserve" });
 
   if (payload.run && payload.run.status === "running") {
     setStatus("Running");
+    syncRunActionButtons();
     return;
   }
 
@@ -399,6 +423,7 @@ async function pollRun(runId) {
   stopRunPolling();
   setStatus(payload.run?.status === "failed" ? "Failed" : "Idle");
   syncDeleteThreadButton();
+  syncRunActionButtons();
 }
 
 async function safeReloadActiveThread() {
@@ -407,7 +432,9 @@ async function safeReloadActiveThread() {
   }
   try {
     const payload = await fetchJson(`/api/threads/${state.activeThreadId}`);
+    state.latestRun = payload.active_run || payload.latest_run || state.latestRun;
     renderThread(payload.thread, payload.messages, payload.events || [], { scrollMode: "preserve" });
+    syncRunActionButtons();
   } catch (error) {
     console.error(error);
   }
@@ -811,6 +838,183 @@ function setStatus(label) {
 
 function syncDeleteThreadButton() {
   deleteThreadButton.disabled = !state.activeThreadId || state.isSending;
+}
+
+function syncRunActionButtons() {
+  const run = state.latestRun;
+  const hasRun = Boolean(run);
+  const isRunning = run?.status === "running";
+  reviewPatchesButton.disabled = !hasRun || !run?.result;
+  applyChangesButton.disabled = !hasRun || isRunning || !run?.can_apply;
+  exportReportButton.disabled = !hasRun || !run?.result;
+  exportSummaryButton.disabled = !hasRun || !run?.result;
+  exportLogsButton.disabled = !hasRun;
+}
+
+function openPatchReview() {
+  const run = state.latestRun;
+  if (!run?.result) {
+    return;
+  }
+
+  const stateResult = run.result;
+  const validationResults = stateResult.validation_results || [];
+  const reviewNotes = stateResult.review_notes || [];
+  const content = document.getElementById("patch-review-content");
+  const subtitle = document.getElementById("patch-review-subtitle");
+  subtitle.textContent = `Run ${run.id} · status ${run.status}`;
+
+  const sections = [];
+
+  if (stateResult.worker_outputs?.length) {
+    for (const artifact of stateResult.worker_outputs) {
+      const changes = artifact.code_changes || [];
+      sections.push(`
+        <section class="patch-review-section">
+          <h4>${escapeHtml(artifact.owner)}</h4>
+          <p>${escapeHtml(artifact.summary || "")}</p>
+          ${changes.length ? changes.map(renderPatchChange).join("") : "<p>No file diffs were produced.</p>"}
+        </section>
+      `);
+    }
+  } else {
+    sections.push("<p>No worker outputs were recorded for this run.</p>");
+  }
+
+  sections.push(`
+    <section class="patch-review-section">
+      <h4>Validation</h4>
+      ${validationResults.length ? validationResults.map(renderValidationResult).join("") : "<p>No validation results were recorded.</p>"}
+    </section>
+  `);
+
+  if (reviewNotes.length) {
+    const latest = reviewNotes[reviewNotes.length - 1];
+    sections.push(`
+      <section class="patch-review-section">
+        <h4>Review</h4>
+        <p>Passed: <strong>${escapeHtml(String(latest.passed))}</strong></p>
+        ${latest.issues?.length ? `<ul>${latest.issues.map((issue) => `<li>${escapeHtml(issue)}</li>`).join("")}</ul>` : "<p>No review issues recorded.</p>"}
+      </section>
+    `);
+  }
+
+  content.innerHTML = sections.join("");
+  openModal("patch-review-modal");
+}
+
+function renderPatchChange(change) {
+  return `
+    <div class="patch-change">
+      <div class="patch-change-meta">
+        <strong>${escapeHtml(change.file_path)}</strong>
+        <span>${escapeHtml(change.change_type)} · ${escapeHtml(change.apply_status || "pending")}</span>
+      </div>
+      <p>${escapeHtml(change.summary || "")}</p>
+      <pre class="diff-block"><code>${escapeHtml(change.unified_diff || "No diff available.")}</code></pre>
+    </div>
+  `;
+}
+
+function renderValidationResult(result) {
+  return `
+    <div class="validation-result ${escapeHtml(result.status)}">
+      <strong>${escapeHtml(result.command)}</strong>
+      <span>${escapeHtml(result.status)}${result.exit_code !== null && result.exit_code !== undefined ? ` · exit ${escapeHtml(String(result.exit_code))}` : ""}</span>
+      ${result.reason ? `<p>${escapeHtml(result.reason)}</p>` : ""}
+      ${result.stderr ? `<pre class="diff-block"><code>${escapeHtml(result.stderr)}</code></pre>` : ""}
+    </div>
+  `;
+}
+
+async function applyLatestRun() {
+  const run = state.latestRun;
+  if (!run?.id || !state.activeThreadId || !run.can_apply) {
+    return;
+  }
+
+  const confirmed = window.confirm("Apply this entire reviewed patch set to the selected workspace?");
+  if (!confirmed) {
+    return;
+  }
+
+  applyChangesButton.disabled = true;
+  try {
+    const response = await fetch(`/api/threads/${state.activeThreadId}/runs/${run.id}/apply`, {
+      method: "POST",
+    });
+    const payload = await readJson(response);
+    if (!response.ok) {
+      window.alert(payload.detail || "Failed to apply changes.");
+      syncRunActionButtons();
+      return;
+    }
+    state.latestRun = payload.run || payload.latest_run || state.latestRun;
+    renderThread(payload.thread, payload.messages, payload.events || [], { scrollMode: "if-near-bottom" });
+    await loadThreads();
+    syncRunActionButtons();
+  } catch (error) {
+    console.error(error);
+    window.alert("Failed to apply changes.");
+    syncRunActionButtons();
+  }
+}
+
+async function exportLatestRun(kind) {
+  const run = state.latestRun;
+  if (!run?.id || !state.activeThreadId) {
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/threads/${state.activeThreadId}/runs/${run.id}/export/${kind}`);
+    if (!response.ok) {
+      const payload = await readJson(response);
+      window.alert(payload.detail || "Failed to export run.");
+      return;
+    }
+
+    const filename = extractFilename(response.headers.get("Content-Disposition")) || defaultExportName(kind);
+    const contentType = response.headers.get("Content-Type") || "text/plain";
+    const content = await response.text();
+
+    if (window.desktopApp?.saveFile) {
+      const saved = await window.desktopApp.saveFile({ filename, content });
+      if (!saved) {
+        return;
+      }
+    } else {
+      downloadInBrowser(filename, contentType, content);
+    }
+  } catch (error) {
+    console.error(error);
+    window.alert("Failed to export run.");
+  }
+}
+
+function extractFilename(contentDisposition) {
+  if (!contentDisposition) {
+    return "";
+  }
+  const match = contentDisposition.match(/filename=\"([^\"]+)\"/);
+  return match ? match[1] : "";
+}
+
+function defaultExportName(kind) {
+  const suffix = kind === "logs" ? "json" : "md";
+  return `coding-run-${kind}.${suffix}`;
+}
+
+function downloadInBrowser(filename, contentType, content) {
+  const blob = new Blob([content], { type: contentType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 async function fetchJson(url, options) {

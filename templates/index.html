@@ -32,6 +32,11 @@
                     <h2 id="thread-title">Select a thread</h2>
                 </div>
                 <div class="topbar-actions">
+                    <button id="review-patches-button" class="ghost-button">Review Patches</button>
+                    <button id="apply-changes-button" class="primary-button">Apply Changes</button>
+                    <button id="export-report-button" class="ghost-button">Export Report</button>
+                    <button id="export-summary-button" class="ghost-button">Export Summary</button>
+                    <button id="export-logs-button" class="ghost-button">Export Logs</button>
                     <button id="delete-thread-button" class="ghost-button danger-button">Delete Thread</button>
                     <button id="open-logs-button" class="ghost-button">Logs</button>
                     <button id="open-settings-button" class="ghost-button">Settings</button>
@@ -104,6 +109,19 @@
                 <button data-close-modal="logs-modal" class="close-button">Close</button>
             </div>
             <div id="logs-list" class="logs-list modal-content"></div>
+        </div>
+    </div>
+
+    <div id="patch-review-modal" class="modal hidden">
+        <div class="modal-card wide">
+            <div class="modal-header">
+                <div>
+                    <h3>Patch Review</h3>
+                    <p id="patch-review-subtitle">Review the latest patch set, validation, and apply readiness.</p>
+                </div>
+                <button data-close-modal="patch-review-modal" class="close-button">Close</button>
+            </div>
+            <div id="patch-review-content" class="logs-list modal-content"></div>
         </div>
     </div>
 

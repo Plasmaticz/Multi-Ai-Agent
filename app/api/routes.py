@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
+from app.agents.finalizer import FinalizerAgent
 from app.config import Settings
-from app.schemas.state import RunContext
+from app.schemas.state import CodeChange, ProjectState, RunContext
 from app.tools.thread_memory import build_run_context, refresh_thread_summary
+from app.tools.workspace_tools import WorkspaceTool
 from app.workflows.run_crew import CrewRunner
 
 logger = logging.getLogger(__name__)
@@ -81,7 +84,7 @@ def delete_thread(thread_id: str, request: Request) -> dict[str, Any]:
 
 @router.get("/api/threads/{thread_id}")
 def get_thread_detail(thread_id: str, request: Request) -> dict[str, Any]:
-    return _thread_payload(request.app.state.local_store, thread_id)
+    return _thread_payload(request.app.state.local_store, thread_id, request)
 
 
 @router.post("/api/threads/{thread_id}/messages")
@@ -124,8 +127,8 @@ def send_message(thread_id: str, payload: MessageRequest, request: Request) -> J
         runtime_settings,
     )
 
-    response_payload = _thread_payload(store, thread_id)
-    response_payload["run"] = store.get_run(run["id"])
+    response_payload = _thread_payload(store, thread_id, request)
+    response_payload["run"] = _serialize_run(store.get_run(run["id"]), request)
     return JSONResponse(status_code=202, content=response_payload)
 
 
@@ -137,10 +140,138 @@ def get_thread_run(thread_id: str, run_id: str, request: Request) -> dict[str, A
     if run is None or run["thread_id"] != thread_id:
         raise HTTPException(status_code=404, detail="Run not found.")
 
-    payload = _thread_payload(store, thread_id)
-    payload["run"] = run
+    payload = _thread_payload(store, thread_id, request)
+    payload["run"] = _serialize_run(run, request)
     payload["events"] = store.list_logs(thread_id=thread_id, limit=500, ascending=True)
     return payload
+
+
+@router.post("/api/threads/{thread_id}/runs/{run_id}/apply")
+def apply_thread_run(thread_id: str, run_id: str, request: Request) -> dict[str, Any]:
+    store = request.app.state.local_store
+    _get_thread_or_404(store, thread_id)
+    run = store.get_run(run_id)
+    if run is None or run["thread_id"] != thread_id:
+        raise HTTPException(status_code=404, detail="Run not found.")
+
+    if run["status"] != "complete":
+        raise HTTPException(status_code=409, detail="Only completed runs can be applied.")
+
+    state = _load_project_state_from_run(run)
+    if state is None:
+        raise HTTPException(status_code=409, detail="Run does not contain an applyable result.")
+
+    can_apply, reason = _can_apply_state(state)
+    if not can_apply:
+        raise HTTPException(status_code=409, detail=reason)
+    if state.metadata.get("apply_status") == "applied":
+        raise HTTPException(status_code=409, detail="Changes for this run were already applied.")
+
+    runtime_settings = _resolve_runtime_settings(request)
+    workspace_tool = WorkspaceTool(runtime_settings.workspace_path)
+    work_items_by_id = {item.work_item_id: item for item in state.implementation_plan}
+    applied_count = 0
+    rejected_count = 0
+    summaries: list[str] = []
+
+    for artifact in state.worker_outputs:
+        work_item = work_items_by_id.get(artifact.work_item_id)
+        allowed_paths = set(work_item.write_scope) if work_item is not None else set()
+        for change in artifact.code_changes:
+            if change.apply_status == "applied":
+                continue
+            result_message = ""
+            if change.change_type not in {"modify", "create"}:
+                change.apply_status = "rejected"
+                result_message = "Unsupported change type."
+            elif change.file_path not in allowed_paths:
+                change.apply_status = "rejected"
+                result_message = "File is outside the assigned write scope."
+            elif workspace_tool.resolve_path(change.file_path) is None:
+                change.apply_status = "rejected"
+                result_message = "File is outside the selected workspace."
+            elif not change.proposed_content or not change.unified_diff:
+                change.apply_status = "rejected"
+                result_message = "Patch is missing proposed content or diff."
+            else:
+                write_result = workspace_tool.write_text(change.file_path, change.proposed_content)
+                change.apply_status = write_result.status
+                result_message = write_result.message
+
+            if change.apply_status == "applied":
+                applied_count += 1
+            else:
+                rejected_count += 1
+            summaries.append(f"{change.file_path}: {change.apply_status} ({result_message})")
+
+    state.metadata["apply_status"] = "applied" if rejected_count == 0 else "partial"
+    state.metadata["apply_summary"] = {
+        "applied_count": applied_count,
+        "rejected_count": rejected_count,
+        "details": summaries,
+    }
+
+    store.update_run_result(run_id, state.model_dump(mode="json"))
+    store.add_log(
+        thread_id=thread_id,
+        run_id=run_id,
+        agent_name="system",
+        event_type="apply",
+        status="completed" if rejected_count == 0 else "needs_human_review",
+        message=f"Applied {applied_count} file change(s); rejected {rejected_count}.",
+    )
+    store.add_message(
+        thread_id=thread_id,
+        role="assistant",
+        run_id=run_id,
+        message_type="text",
+        content=_build_apply_message(state),
+    )
+
+    payload = _thread_payload(store, thread_id, request)
+    payload["run"] = _serialize_run(store.get_run(run_id), request)
+    return payload
+
+
+@router.get("/api/threads/{thread_id}/runs/{run_id}/export/{kind}")
+def export_thread_run(thread_id: str, run_id: str, kind: str, request: Request) -> Response:
+    store = request.app.state.local_store
+    _get_thread_or_404(store, thread_id)
+    run = store.get_run(run_id)
+    if run is None or run["thread_id"] != thread_id:
+        raise HTTPException(status_code=404, detail="Run not found.")
+
+    state = _load_project_state_from_run(run)
+    if state is None:
+        raise HTTPException(status_code=409, detail="Run does not contain exportable content.")
+
+    runtime_settings = _resolve_runtime_settings(request)
+    finalizer = FinalizerAgent()
+
+    if kind == "report":
+        content = state.final_output or finalizer.finalize(state, state.worker_outputs)
+        media_type = "text/markdown; charset=utf-8"
+        filename = "coding-run-report.md"
+    elif kind == "summary":
+        content = finalizer.summarize_run(
+            state,
+            workspace_dir=str(runtime_settings.workspace_path),
+            run_status=run["status"],
+        )
+        media_type = "text/markdown; charset=utf-8"
+        filename = "coding-run-summary.md"
+    elif kind == "logs":
+        content = json.dumps(store.list_logs(thread_id=thread_id, run_id=run_id, limit=500, ascending=True), indent=2)
+        media_type = "application/json; charset=utf-8"
+        filename = "coding-run-logs.json"
+    else:
+        raise HTTPException(status_code=404, detail="Unknown export kind.")
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/api/settings")
@@ -284,13 +415,16 @@ def _execute_thread_run(
         store.complete_run(run_id, "failed", {"error": str(exc)})
 
 
-def _thread_payload(store, thread_id: str) -> dict[str, Any]:
+def _thread_payload(store, thread_id: str, request: Request) -> dict[str, Any]:
     thread = _get_thread_or_404(store, thread_id)
+    latest_run = store.get_latest_run(thread_id)
+    active_run = store.get_active_run(thread_id)
     return {
         "thread": thread,
         "messages": store.list_messages(thread_id),
         "events": store.list_logs(thread_id=thread_id, limit=500, ascending=True),
-        "active_run": store.get_active_run(thread_id),
+        "active_run": _serialize_run(active_run, request) if active_run else None,
+        "latest_run": _serialize_run(latest_run, request) if latest_run else None,
     }
 
 
@@ -340,6 +474,71 @@ def _normalize_workspace_dir(value: str) -> str:
     if not candidate.is_dir():
         raise HTTPException(status_code=400, detail="Workspace folder must be a directory.")
     return str(candidate)
+
+
+def _serialize_run(run: dict[str, Any] | None, request: Request) -> dict[str, Any] | None:
+    if run is None:
+        return None
+
+    payload = dict(run)
+    state = _load_project_state_from_run(run)
+    payload["result"] = state.model_dump(mode="json") if state is not None else None
+    if state is None:
+        payload["can_apply"] = False
+        payload["apply_status"] = None
+        return payload
+
+    can_apply, reason = _can_apply_state(state, run_status=run["status"])
+    payload["can_apply"] = can_apply
+    payload["apply_block_reason"] = reason if not can_apply else ""
+    payload["apply_status"] = state.metadata.get("apply_status", "pending")
+    payload["workspace_dir"] = str(_resolve_runtime_settings(request).workspace_path)
+    return payload
+
+
+def _load_project_state_from_run(run: dict[str, Any]) -> ProjectState | None:
+    raw = run.get("result_json")
+    if not raw:
+        return None
+    try:
+        return ProjectState.model_validate(json.loads(raw))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
+
+
+def _can_apply_state(state: ProjectState, *, run_status: str | None = None) -> tuple[bool, str]:
+    if run_status is not None and run_status != "complete":
+        return False, "Only completed runs can be applied."
+    if state.metadata.get("apply_status") == "applied":
+        return False, "Changes for this run were already applied."
+    if not state.worker_outputs:
+        return False, "No worker artifacts are available to apply."
+    if state.review_notes and not state.review_notes[-1].passed:
+        return False, "The latest review did not pass."
+    if any(result.status == "failed" for result in state.validation_results):
+        return False, "Validation failed for this run."
+    for artifact in state.worker_outputs:
+        if not artifact.code_changes:
+            return False, f"{artifact.owner} does not have applyable code changes."
+        for change in artifact.code_changes:
+            if not change.proposed_content or not change.unified_diff:
+                return False, f"{change.file_path} is missing content or diff data."
+    return True, ""
+
+
+def _build_apply_message(state: ProjectState) -> str:
+    summary = state.metadata.get("apply_summary", {})
+    details = summary.get("details", [])
+    lines = [
+        "## Apply Results",
+        f"- Apply status: `{state.metadata.get('apply_status', 'pending')}`",
+        f"- Applied files: `{summary.get('applied_count', 0)}`",
+        f"- Rejected files: `{summary.get('rejected_count', 0)}`",
+    ]
+    if details:
+        lines.append("Details:")
+        lines.extend(f"- {detail}" for detail in details)
+    return "\n".join(lines)
 
 
 def _mask_api_key(value: str | None) -> str:

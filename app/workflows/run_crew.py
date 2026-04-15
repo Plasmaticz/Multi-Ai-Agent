@@ -41,9 +41,12 @@ class CrewRunner:
         self.orchestrator = OrchestratorAgent()
         self.repo_explorer = RepoExplorerAgent(repo_search=repo_search, llm_client=self.llm_client)
         self.architect = ArchitectAgent(llm_client=self.llm_client)
-        self.code_worker = CodeWorkerAgent(llm_client=self.llm_client)
+        self.code_worker = CodeWorkerAgent(llm_client=self.llm_client, workspace_path=self.settings.workspace_path)
         self.reviewer = ReviewerAgent(llm_client=self.llm_client)
-        self.validator = ValidatorAgent()
+        self.validator = ValidatorAgent(
+            workspace_path=self.settings.workspace_path,
+            timeout_seconds=self.settings.request_timeout_seconds,
+        )
         self.finalizer = FinalizerAgent()
 
     def run(
@@ -69,6 +72,7 @@ class CrewRunner:
             "worker_runtimes_ms": {},
             "implementation_passes": [],
         }
+        state.metadata["apply_status"] = "pending"
 
         state.tasks = [
             {
@@ -177,15 +181,32 @@ class CrewRunner:
             self.store.save(state)
 
         state.status = "validate"
-        self._emit_event("validator", "validate", "started", "Preparing validation commands.")
+        self._emit_event("validator", "validate", "started", "Running validation commands.")
         self._set_task_status(state, TaskType.validate, TaskStatus.in_progress)
-        state.validation_commands = self.validator.build_validation_commands(state.worker_outputs)
-        self._set_task_status(state, TaskType.validate, TaskStatus.completed)
-        self._emit_event("validator", "validate", "completed", "Validation commands prepared.")
+        state.validation_commands, state.validation_results = self.validator.validate(state.worker_outputs)
+        failed_validations = [result for result in state.validation_results if result.status == "failed"]
+        state.metadata["apply_status"] = "ready" if not failed_validations else "blocked"
+        self._set_task_status(
+            state,
+            TaskType.validate,
+            TaskStatus.completed if not failed_validations else TaskStatus.failed,
+        )
+        self._emit_event(
+            "validator",
+            "validate",
+            "completed" if not failed_validations else "failed",
+            "Validation commands passed or were skipped."
+            if not failed_validations
+            else "Validation failed: " + "; ".join(result.command for result in failed_validations),
+        )
         state.touch()
         self.store.save(state)
 
-        state.status = "complete" if state.review_notes and state.review_notes[-1].passed else "needs_human_review"
+        state.status = (
+            "complete"
+            if state.review_notes and state.review_notes[-1].passed and not failed_validations
+            else "needs_human_review"
+        )
         self._emit_event("orchestrator", "finalize", "started", "Finalizing coding response.")
         self._set_task_status(state, TaskType.finalize, TaskStatus.in_progress)
         execution_metrics = state.metadata.setdefault("execution_metrics", {})

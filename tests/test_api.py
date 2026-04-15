@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
-from app.schemas.state import ProjectState
+from app.schemas.state import CodeChange, ProjectState, ReviewNote, ValidationResult, WorkItem, WorkerArtifact
 from app.tools.repo_tools import RepoSearchTool
 
 
@@ -226,6 +226,89 @@ def test_delete_thread_removes_it_from_database(tmp_path):
     assert missing.status_code == 404
 
 
+def test_apply_run_writes_changes_inside_workspace(tmp_path):
+    client = _build_client(tmp_path)
+    store = client.app.state.local_store
+    workspace = tmp_path / "workspace"
+    target = workspace / "app/api/routes.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("from fastapi import APIRouter\n", encoding="utf-8")
+    original = target.read_text(encoding="utf-8")
+
+    thread = store.create_thread("Apply Thread")
+    run = store.create_run(thread["id"], "Add JWT auth", "user-message-id")
+    state = _build_completed_state(
+        request_id=run["id"],
+        goal="Add JWT auth",
+        file_path="app/api/routes.py",
+        proposed_content=f"{original}\n# Applied patch\n",
+    )
+    store.complete_run(run["id"], "complete", state.model_dump(mode="json"))
+
+    response = client.post(f"/api/threads/{thread['id']}/runs/{run['id']}/apply")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run"]["apply_status"] == "applied"
+    assert "# Applied patch" in target.read_text(encoding="utf-8")
+    assert any(message["run_id"] == run["id"] and "Apply Results" in message["content"] for message in payload["messages"])
+
+
+def test_apply_run_blocks_failed_validation(tmp_path):
+    client = _build_client(tmp_path)
+    store = client.app.state.local_store
+    thread = store.create_thread("Blocked Apply")
+    run = store.create_run(thread["id"], "Add JWT auth", "user-message-id")
+    state = _build_completed_state(
+        request_id=run["id"],
+        goal="Add JWT auth",
+        file_path="app/api/routes.py",
+        proposed_content="print('x')\n",
+    )
+    state.validation_results = [
+        ValidationResult(command="pytest -q", status="failed", exit_code=1, stderr="boom"),
+    ]
+    store.complete_run(run["id"], "complete", state.model_dump(mode="json"))
+
+    response = client.post(f"/api/threads/{thread['id']}/runs/{run['id']}/apply")
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Validation failed for this run."
+
+
+def test_export_run_report_summary_and_logs(tmp_path):
+    client = _build_client(tmp_path)
+    store = client.app.state.local_store
+    thread = store.create_thread("Export Thread")
+    run = store.create_run(thread["id"], "Add JWT auth", "user-message-id")
+    state = _build_completed_state(
+        request_id=run["id"],
+        goal="Add JWT auth",
+        file_path="app/api/routes.py",
+        proposed_content="from fastapi import APIRouter\n",
+    )
+    store.complete_run(run["id"], "complete", state.model_dump(mode="json"))
+    store.add_log(
+        thread_id=thread["id"],
+        run_id=run["id"],
+        agent_name="system",
+        event_type="run",
+        status="completed",
+        message="Run finished.",
+    )
+
+    report = client.get(f"/api/threads/{thread['id']}/runs/{run['id']}/export/report")
+    assert report.status_code == 200
+    assert "Multi-Agent Coding Plan" in report.text
+
+    summary = client.get(f"/api/threads/{thread['id']}/runs/{run['id']}/export/summary")
+    assert summary.status_code == 200
+    assert "Run Summary" in summary.text
+    assert "Add JWT auth" in summary.text
+
+    logs = client.get(f"/api/threads/{thread['id']}/runs/{run['id']}/export/logs")
+    assert logs.status_code == 200
+    assert logs.json()[0]["message"] == "Run finished."
+
+
 def test_repo_tool_blocks_reads_outside_workspace(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -263,3 +346,47 @@ def _build_client(tmp_path, environment: str = "dev") -> TestClient:
         )
     )
     return TestClient(app)
+
+
+def _build_completed_state(*, request_id: str, goal: str, file_path: str, proposed_content: str) -> ProjectState:
+    return ProjectState(
+        request_id=request_id,
+        user_goal=goal,
+        status="complete",
+        implementation_plan=[
+            WorkItem(
+                work_item_id="backend",
+                title="Backend Worker",
+                owner="repo_worker_backend",
+                write_scope=[file_path],
+                rationale="Update the backend file.",
+                acceptance_criteria=["File change is proposed."],
+            )
+        ],
+        worker_outputs=[
+            WorkerArtifact(
+                work_item_id="backend",
+                owner="repo_worker_backend",
+                summary="Backend patch ready.",
+                files_touched=[file_path],
+                code_changes=[
+                    CodeChange(
+                        file_path=file_path,
+                        change_type="modify",
+                        summary="Update backend file",
+                        proposed_content=proposed_content,
+                        unified_diff="--- a/file\n+++ b/file\n@@\n-old\n+new\n",
+                        apply_status="pending",
+                    )
+                ],
+                tests_to_run=["pytest -q"],
+                risks=[],
+                confidence=0.8,
+            )
+        ],
+        validation_commands=["pytest -q"],
+        validation_results=[ValidationResult(command="pytest -q", status="passed", exit_code=0)],
+        review_notes=[ReviewNote(passed=True, issues=[], confidence=0.9)],
+        final_output="# Multi-Agent Coding Plan\n\nPrepared patch.",
+        metadata={"apply_status": "ready"},
+    )

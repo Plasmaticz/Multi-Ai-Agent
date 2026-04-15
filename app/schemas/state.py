@@ -66,7 +66,19 @@ class CodeChange(BaseModel):
     file_path: str
     change_type: str = "modify"
     summary: str
-    proposal: str
+    proposed_content: str = ""
+    unified_diff: str = ""
+    apply_status: str = "pending"
+
+
+class ValidationResult(BaseModel):
+    command: str
+    status: str
+    exit_code: int | None = None
+    duration_ms: float = Field(default=0.0, ge=0.0)
+    stdout: str = ""
+    stderr: str = ""
+    reason: str = ""
 
 
 class WorkerArtifact(BaseModel):
@@ -106,6 +118,7 @@ class ProjectState(BaseModel):
     implementation_plan: list[WorkItem] = Field(default_factory=list)
     worker_outputs: list[WorkerArtifact] = Field(default_factory=list)
     validation_commands: list[str] = Field(default_factory=list)
+    validation_results: list[ValidationResult] = Field(default_factory=list)
     drafts: list[str] = Field(default_factory=list)
     review_notes: list[ReviewNote] = Field(default_factory=list)
     final_output: str = ""

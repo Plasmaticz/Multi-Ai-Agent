@@ -435,6 +435,32 @@ class LocalAppStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_latest_run(self, thread_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, thread_id, user_message_id, goal, status, result_json, created_at, completed_at
+                FROM runs
+                WHERE thread_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (thread_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_run_result(self, run_id: str, result: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE runs
+                SET result_json = ?
+                WHERE id = ?
+                """,
+                (json.dumps(result), run_id),
+            )
+            connection.commit()
+
     def list_logs(
         self,
         thread_id: str | None = None,

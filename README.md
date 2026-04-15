@@ -2,7 +2,7 @@
 
 A local-first desktop application for running a multithreaded AI coding workflow on your own machine.
 
-It combines an Electron desktop shell, a FastAPI backend, SQLite persistence, and a coordinated team of AI agents that inspect a repository, plan implementation work, fan out independent worker tasks in parallel, review the merged results, and prepare validation commands from a single prompt.
+It combines an Electron desktop shell, a FastAPI backend, SQLite persistence, and a coordinated team of AI agents that inspect a repository, plan implementation work, fan out independent worker tasks in parallel, review the merged results, execute validation commands, and package guarded code changes from a single prompt.
 
 ## Overview
 
@@ -10,10 +10,13 @@ It combines an Electron desktop shell, a FastAPI backend, SQLite persistence, an
 
 - create threads
 - delete threads safely with confirmation
+- choose a specific workspace folder and keep repo analysis inside that root
 - send implementation prompts in a chat-style interface
 - watch grouped agent progress live in the timeline
 - tune how many worker threads a run can use
 - inspect logs for each run
+- review patch diffs before applying them
+- export reports, summaries, and run logs
 - keep all thread history and settings stored locally
 
 The only external dependency is your model provider. In the current version, that means an OpenAI API key if you want live LLM-backed behavior.
@@ -25,10 +28,16 @@ When you send a prompt, the app runs a centralized multi-agent coding workflow w
 1. `Orchestrator` plans the coding run.
 2. `Repo Explorer` scans the local repository for relevant files and symbols.
 3. `Architect` turns repo findings into disjoint work items.
-4. `Code Workers` run in parallel and propose file-level changes.
+4. `Code Workers` run in parallel and generate file-level patch proposals with diffs.
 5. `Reviewer` checks for conflicts, missing coverage, and risky assumptions.
-6. `Validator` prepares suggested verification commands.
-7. `Finalizer` returns a structured coding response back into the thread.
+6. `Validator` detects and executes supported verification commands inside the selected workspace.
+7. `Finalizer` returns a structured coding response back into the thread, including validation and apply readiness.
+
+After a run completes, the desktop UI can:
+
+- review unified diffs in a patch review modal
+- apply the entire patch set in one guarded action
+- export the report, run summary, or structured logs
 
 The app also carries thread memory into later runs using:
 
@@ -55,12 +64,17 @@ Each run also records execution metrics so you can evaluate the concurrency mode
 - Short thread titles derived from the first prompt
 - Delete-thread flow with confirmation
 - Settings modal for OpenAI API key and model selection
+- Settings modal for workspace folder selection
 - Settings control for maximum worker-thread count
 - Logs modal for debugging agent activity
+- Patch review modal with unified diffs and validation results
 - Live run activity card in the thread timeline
 - In-thread error rendering for failed runs
 - Repository-aware exploration of local files
 - Parallel code workers with disjoint write scopes
+- Guarded patch application inside the selected workspace
+- Real validation command execution with pass/fail/skip results
+- Export actions for markdown reports, run summaries, and JSON logs
 - Execution metrics for concurrency benchmarking
 - Thread memory via summary plus recent messages
 - Packaged macOS desktop build support
@@ -79,6 +93,7 @@ Electron App
       -> Reviewer
       -> Validator
       -> Finalizer
+    -> Guarded patch apply/export APIs
 ```
 
 ## Tech Stack
@@ -88,6 +103,7 @@ Electron App
 - `SQLite` for threads, messages, runs, logs, and settings
 - `OpenAI Responses API` for LLM-backed agents
 - `ripgrep` for repository search
+- `subprocess`-based local command execution for validation
 - `PyInstaller` for bundling the backend into a standalone executable
 - `electron-builder` for macOS app packaging
 
@@ -195,8 +211,10 @@ Then open:
 2. Open `Settings`.
 3. Paste your OpenAI API key.
 4. Choose a model such as `gpt-4.1-mini`.
-5. Create a new thread.
-6. Send a prompt like:
+5. Choose the workspace folder you want the app to inspect and edit.
+6. Set how many worker threads you want the run to use.
+7. Create a new thread.
+8. Send a prompt like:
 
 ```text
 Add JWT auth to the FastAPI app, propose the file changes, review for bugs, and include tests to run.
@@ -207,8 +225,15 @@ During the run, you should see:
 - your user message appear immediately
 - a single activity card showing the agent team and each stage state
 - execution metrics included in the final answer after the run completes
+- validation results included in the final answer after the run completes
 - a saved assistant response when the run completes
 - logs available in the `Logs` modal
+
+After the run, you can:
+
+- open `Review Patches` to inspect file diffs and validation output
+- click `Apply Changes` to write approved patch content into the selected workspace
+- export the report, run summary, or logs from the top bar
 
 Thread behavior:
 
@@ -240,6 +265,7 @@ REQUEST_TIMEOUT_SECONDS=15
 - `OPENAI_MODEL`: model used by the LLM-backed agents
 - `WORKSPACE_DIR`: local repository or workspace to inspect
 - `MAX_CONCURRENT_RESEARCH`: maximum number of parallel AI worker threads to use during a run
+- `REQUEST_TIMEOUT_SECONDS`: per-command timeout for validation execution
 - `APP_DATA_DIR`: location of local SQLite data and app state
 
 ## Desktop Build
@@ -294,6 +320,10 @@ The app UI uses these local routes:
 - `GET /api/threads/{thread_id}`
 - `POST /api/threads/{thread_id}/messages`
 - `GET /api/threads/{thread_id}/runs/{run_id}`
+- `POST /api/threads/{thread_id}/runs/{run_id}/apply`
+- `GET /api/threads/{thread_id}/runs/{run_id}/export/report`
+- `GET /api/threads/{thread_id}/runs/{run_id}/export/summary`
+- `GET /api/threads/{thread_id}/runs/{run_id}/export/logs`
 - `GET /api/settings`
 - `POST /api/settings`
 - `GET /api/logs`
@@ -309,13 +339,17 @@ pytest -q
 ## Current Behavior Notes
 
 - Repo exploration is local and repository-aware.
+- Repo exploration and guarded file writes stay inside the selected workspace root.
 - Thread context is summarized and reused across later prompts.
 - Architect, code workers, and reviewer are LLM-backed when OpenAI is configured.
 - Code workers run in parallel when they have disjoint scopes.
+- Workers now generate concrete proposed file content plus unified diffs.
+- Validation executes supported commands in the local workspace and records `passed`, `failed`, or `skipped` results.
+- Patch application is guarded, text-file only, and limited to assigned files inside the selected workspace.
+- Exports are available for the full report, a concise run summary, and structured JSON logs.
 - Parallel runs record total runtime, per-worker durations, a sequential baseline estimate, and parallel speedup.
 - The chat timeline shows grouped per-run agent activity rather than raw log spam.
 - Thread deletion is persisted in SQLite and blocked while a run is active.
-- The workflow proposes code changes and validation commands; it does not automatically apply patches to your repo yet.
 - Local app state is stored in SQLite.
 - Desktop packaging currently targets macOS first.
 
@@ -323,8 +357,9 @@ pytest -q
 
 Some strong next steps for the project:
 
-- actual patch application with guarded approval
-- terminal-backed test execution from the desktop workflow
+- revert last apply / rollback support
+- per-run selector for review, apply, and export actions
+- richer validator progress in the live activity UI
 - richer trace visualization per agent
 - stronger file ownership and merge-conflict prevention
 - code signing and notarization for macOS builds

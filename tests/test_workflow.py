@@ -1,6 +1,8 @@
+import subprocess
 import time
 
 from app.config import Settings
+from app.agents.validator import ValidatorAgent
 from app.schemas.state import CodeChange, RepoFinding, WorkerArtifact
 from app.workflows.run_crew import CrewRunner
 
@@ -25,6 +27,7 @@ def test_workflow_produces_coding_plan(tmp_path):
     assert len(state.worker_outputs) == len(state.implementation_plan)
     assert len(state.review_notes) >= 1
     assert state.validation_commands
+    assert state.validation_results
     assert state.metadata.get("llm_enabled") is False
     assert state.metadata.get("implementation_concurrency") == 3
     assert state.metadata.get("thread_count") == 3
@@ -40,8 +43,12 @@ def test_workflow_produces_coding_plan(tmp_path):
     output = state.final_output.lower()
     assert "requested change" in output
     assert "proposed file changes" in output
-    assert "validation commands" in output
+    assert "validation" in output
     assert "execution metrics" in output
+    assert "apply readiness" in output
+    assert all(change.unified_diff for artifact in state.worker_outputs for change in artifact.code_changes)
+    assert all(change.proposed_content for artifact in state.worker_outputs for change in artifact.code_changes)
+    assert all(change.apply_status == "pending" for artifact in state.worker_outputs for change in artifact.code_changes)
 
 
 def test_parallel_code_workers_run_concurrently(tmp_path):
@@ -74,7 +81,8 @@ def test_parallel_code_workers_run_concurrently(tmp_path):
                     file_path=work_item.write_scope[0],
                     change_type="modify",
                     summary="Synthetic change",
-                    proposal="Implement the requested coding update.",
+                    proposed_content="updated content\n",
+                    unified_diff="--- a/file\n+++ b/file\n@@\n-old\n+new\n",
                 )
             ],
             tests_to_run=["pytest -q"],
@@ -84,6 +92,7 @@ def test_parallel_code_workers_run_concurrently(tmp_path):
 
     runner.repo_explorer.explore = fake_explore
     runner.code_worker.implement = slow_implement
+    runner.validator.validate = lambda worker_outputs: (["pytest -q"], [])
 
     started_at = time.perf_counter()
     state = runner.run(goal="Add auth UI, backend JWT handling, and tests")
@@ -97,6 +106,50 @@ def test_parallel_code_workers_run_concurrently(tmp_path):
     assert execution_metrics.get("active_worker_threads") == 3
     assert execution_metrics.get("parallel_speedup", 1.0) > 1.0
     assert len(execution_metrics.get("worker_runtimes_ms", {})) == 3
+
+
+def test_validator_executes_and_skips_missing_tools(tmp_path, monkeypatch):
+    workspace = _create_workspace(tmp_path)
+    (workspace / "package.json").write_text(
+        '{"scripts":{"test":"echo ok","build":"echo build"}}',
+        encoding="utf-8",
+    )
+
+    commands_seen = []
+
+    def fake_which(name):
+        return "/usr/bin/fake" if name in {"pytest", "npm"} else None
+
+    def fake_run(argv, cwd, capture_output, text, timeout, check):
+        commands_seen.append(" ".join(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("app.agents.validator.shutil.which", fake_which)
+    monkeypatch.setattr("app.agents.validator.subprocess.run", fake_run)
+
+    validator = ValidatorAgent(workspace_path=workspace, timeout_seconds=5)
+    commands, results = validator.validate(
+        [
+            WorkerArtifact(
+                work_item_id="backend",
+                owner="repo_worker_backend",
+                summary="Backend change",
+                files_touched=["app/api/routes.py"],
+                code_changes=[],
+                tests_to_run=["pytest -q"],
+                risks=[],
+                confidence=0.7,
+            )
+        ]
+    )
+
+    assert "pytest -q" in commands
+    assert "npm test" in commands
+    assert "npm run build" in commands
+    assert any(result.command == "pytest -q" and result.status == "passed" for result in results)
+    assert any(result.command == "ruff check ." and result.status == "skipped" for result in results)
+    assert any(result.command == "mypy ." and result.status == "skipped" for result in results)
+    assert "pytest -q" in commands_seen
 
 
 def _create_workspace(tmp_path):

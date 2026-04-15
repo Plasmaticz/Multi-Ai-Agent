@@ -1,6 +1,7 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain } = require("electron");
 const path = require("path");
 const net = require("net");
+const fs = require("fs/promises");
 const { spawn } = require("child_process");
 
 let mainWindow = null;
@@ -185,6 +186,21 @@ ipcMain.handle("dialog:choose-workspace-directory", async () => {
   }
 
   return result.filePaths[0];
+});
+
+ipcMain.handle("dialog:save-file", async (_, payload) => {
+  const ownerWindow = BrowserWindow.getFocusedWindow() || mainWindow || undefined;
+  const result = await dialog.showSaveDialog(ownerWindow, {
+    title: "Save Export",
+    defaultPath: payload?.filename || "export.txt"
+  });
+
+  if (result.canceled || !result.filePath) {
+    return null;
+  }
+
+  await fs.writeFile(result.filePath, payload?.content || "", "utf8");
+  return result.filePath;
 });
 
 app.whenReady().then(async () => {
